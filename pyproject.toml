@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kestreldb"
+version = "0.0.0"
+description = "An educational relational database engine written from scratch in Python."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "hypothesis>=6", "ruff>=0.6", "mypy>=1.11"]
+cli = ["typer>=0.12"]
+bench = ["matplotlib>=3.8"]
+vector = ["numpy>=2"]
+
+[tool.setuptools.packages.find]
+include = ["kestreldb*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Keep test files off C:. The .tmp folder must exist before pytest starts.
+addopts = "-ra --strict-markers --basetemp=.tmp/pytest"
+markers = [
+    "crash: kills a real child process (slow)",
+    "slow: takes more than a few seconds",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "BLE"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true

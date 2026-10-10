@@ -1,0 +1,26 @@
+# Environments and scratch space
+.venv/
+.tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tool caches
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# Database and log files
+*.kdb
+*.kdb.wal
+*.wal
+
+# Editors and OS
+.vscode/
+.idea/
+Thumbs.db
