@@ -218,6 +218,10 @@ class HeapFile:
                 yield RecordId(page_id, slot), record
             page_id = next_id
 
+    def page_count(self) -> int:
+        """Pages in the chain, from the free-space map (walks the chain only once)."""
+        return len(self._load())
+
     def count(self) -> tuple[int, int]:
         """(live records, pages) by walking the chain without decoding records."""
         rows = 0

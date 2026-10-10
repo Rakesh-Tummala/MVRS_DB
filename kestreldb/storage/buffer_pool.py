@@ -32,7 +32,7 @@ from __future__ import annotations
 import struct
 import threading
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
@@ -70,9 +70,19 @@ class PoolStats:
 
 
 class BufferPool:
-    def __init__(self, disk: DiskManager, capacity: int = config.DEFAULT_BUFFER_PAGES) -> None:
+    def __init__(
+        self,
+        disk: DiskManager,
+        capacity: int = config.DEFAULT_BUFFER_PAGES,
+        *,
+        before_page_write: Callable[[], None] | None = None,
+    ) -> None:
+        """`before_page_write` is called before any page is written to the data
+        file. The database passes the log's sync function, which enforces the
+        WAL rule (B6) without this layer knowing that a log exists."""
         if capacity < config.MIN_BUFFER_PAGES:
             raise ValueError(f"buffer pool needs at least {config.MIN_BUFFER_PAGES} frames")
+        self._before_page_write = before_page_write
         self._disk = disk
         self._capacity = capacity
         self._frames: OrderedDict[int, Frame] = OrderedDict()
@@ -81,6 +91,9 @@ class BufferPool:
         self._txn: dict[int, tuple[bytes | None, bool]] | None = None
         self._txn_header: FileHeader | None = None
         self.stats = PoolStats()
+        # Counts every change to a page or the header. Comparing it before and
+        # after a statement tells whether the statement modified anything.
+        self.change_count = 0
 
     # ------------------------------------------------------------------ basics
 
@@ -156,6 +169,7 @@ class BufferPool:
             self.unpin(page_id)
 
     def _mark_written(self, frame: Frame) -> None:
+        self.change_count += 1
         if self._txn is not None and frame.page_id not in self._txn:
             self._txn[frame.page_id] = (bytes(frame.data), frame.dirty)
         frame.dirty = True
@@ -175,8 +189,7 @@ class BufferPool:
                 continue
             if frame.dirty:
                 # If this write fails the frame stays in the pool, still dirty.
-                self._disk.write_page(page_id, frame.data)
-                self.stats.page_writes += 1
+                self._write(page_id, frame)
             del self._frames[page_id]
             self.stats.evictions += 1
             return
@@ -189,6 +202,13 @@ class BufferPool:
 
     # ------------------------------------------------------------------ flushing
 
+    def _write(self, page_id: int, frame: Frame) -> None:
+        if self._before_page_write is not None:
+            self._before_page_write()
+        self._disk.write_page(page_id, frame.data)
+        self.stats.page_writes += 1
+        frame.dirty = False
+
     def flush_page(self, page_id: int) -> None:
         with self._latch:
             frame = self._frames.get(page_id)
@@ -196,9 +216,7 @@ class BufferPool:
                 return
             if self._txn is not None and page_id in self._txn:
                 raise TransactionError(f"page {page_id} belongs to the active transaction")
-            self._disk.write_page(page_id, frame.data)
-            self.stats.page_writes += 1
-            frame.dirty = False
+            self._write(page_id, frame)
 
     def flush_all(self) -> None:
         """Write every dirty page and the file header. Does not fsync."""
@@ -208,9 +226,9 @@ class BufferPool:
             for page_id in sorted(self._frames):
                 frame = self._frames[page_id]
                 if frame.dirty:
-                    self._disk.write_page(page_id, frame.data)
-                    self.stats.page_writes += 1
-                    frame.dirty = False
+                    self._write(page_id, frame)
+            if self._before_page_write is not None:
+                self._before_page_write()
             self._disk.flush_header()
 
     def dirty_page_count(self) -> int:
@@ -235,6 +253,7 @@ class BufferPool:
                 return int(page_id)
             self._make_room()
             page_id = self._disk.allocate()
+            self.change_count += 1
             self._frames[page_id] = Frame(
                 page_id, new_page(self.page_size, page_id, page_type), dirty=True
             )
@@ -274,6 +293,7 @@ class BufferPool:
     def update_header(self, **changes: int) -> None:
         """Change fields of the in-memory file header (rolled back with the transaction)."""
         with self._latch:
+            self.change_count += 1
             self._disk.set_header(replace(self._disk.header, **changes))
 
     # ------------------------------------------------------------------ transactions

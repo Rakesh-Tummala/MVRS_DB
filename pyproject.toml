@@ -34,6 +34,10 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "BLE"]
 
+[tool.ruff.lint.per-file-ignores]
+# The keyword lists read better as whitespace-separated words than as list literals.
+"kestreldb/sql/lexer.py" = ["SIM905"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
