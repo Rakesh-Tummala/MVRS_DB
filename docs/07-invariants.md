@@ -100,6 +100,14 @@ A2 is the "no leaks, no double allocation" check that runs after every crash tes
 | Crash after commit, before pages flushed (Phase 4) | Page LSN behind the log | Redo restores them |
 | Torn or partial log tail (Phase 4) | Record CRC, length, LSN | Tail discarded |
 | `fsync` fails (Phase 4) | `OSError` | Commit fails; engine refuses writes until reopened |
-| Page corrupt with no image in the log (Phase 4) | P1 during recovery | `UnrecoverableCorruptionError` |
+| Page corrupt with no image in the log (Phase 4) | P1 when the page is next read, or by `Database.check()` | `ChecksumMismatchError`; recovery cannot repair it |
+| Log belongs to another database | `db_id` in the log header | `WalMismatchError` |
+| Log header damaged | Header CRC | `CorruptWalError` |
+| Transaction changes more pages than the pool holds | Buffer pool | `TransactionTooLargeError`; rolled back |
+| Two transactions wait for each other | Waits-for graph | `DeadlockError` for one of them; rolled back |
 
 Every error class derives from `KestrelError` in `errors.py`.
+
+## Checking everything at once
+
+`Database.check()` (also `kestrel check <file>`) verifies, for the whole database: P1–P3 for every page, H1–H6 for every heap, T1–T6 and T8 for every index, C1–C4, A1 and A2. It raises the first violation it finds. Every crash test and both model-based tests end by calling it.

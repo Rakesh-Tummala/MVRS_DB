@@ -13,8 +13,19 @@ index scan touches only matching rows, but each one costs a separate heap
 lookup. So the index wins when few rows match and loses when many do. The
 break-even point depends on the ratio INDEX_ROW / (cost per row of a scan).
 
-The constants were set from measurements on this engine (see
-benchmarks/optimizer_crossover.py and the benchmark report), not from theory.
+The constants are measured, not guessed. benchmarks/calibrate_optimizer.py times
+scans of a narrow and a wide table to separate the per-page cost from the
+per-row cost, then times index scans. On the development machine (i5-11320H,
+Python 3.13, warm buffer pool) repeated runs gave ROW_CPU 0.24-0.31, INDEX_ROW
+0.56-0.69 and SORT_ROW about 0.005; the values below are in the middle of those
+ranges. Fetching a row through the index costs a little over twice what a
+sequential scan pays per row, so the index wins until roughly a third to a half
+of the table matches. The "crossover" section of the benchmark report checks
+the planner's choices against measured times.
+
+These numbers describe a warm cache, where a "random" heap fetch is a
+dictionary lookup, not a disk seek. On a cold cache with a spinning disk the
+index would lose much sooner; the model does not account for that.
 
 Selectivity is the estimated fraction of rows a condition keeps:
 
@@ -36,9 +47,9 @@ from kestreldb.sql import ast
 from kestreldb.storage.record import ColumnType, Value
 
 SEQ_PAGE = 1.0
-ROW_CPU = 0.02
-INDEX_ROW = 0.11
-SORT_ROW = 0.004  # per row, per log2(rows)
+ROW_CPU = 0.28
+INDEX_ROW = 0.63
+SORT_ROW = 0.005  # per row, per log2(rows)
 
 DEFAULT_EQUALITY = 0.1
 DEFAULT_RANGE = 1 / 3

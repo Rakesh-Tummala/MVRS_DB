@@ -1,5 +1,21 @@
 # 08 — Milestone plan and acceptance criteria
 
+## Status (2026-10-11)
+
+| Phase | State |
+|---|---|
+| 0 Design | Done |
+| 1 Storage | Done |
+| 2 B+ tree | Done. Rebalancing on delete deferred, as the plan allowed. |
+| 3 SQL and execution | Done. Inner joins (stretch) not attempted. |
+| 4 Log and recovery | Done. Optional delta records (4.6) not built. |
+| 5 Transactions | Done with table locks and one writer. MVCC (stretch) not attempted. |
+| 6 Optimiser | Done: cost-based, constants fitted from measurements. |
+| 7 Benchmarks | Done: `benchmarks/results/REPORT.md`. |
+| 8 Vector search | Not started (optional). |
+
+The phases were built in one pass rather than one gated milestone at a time, and all code, including the parts marked "you" below, was written by Claude at my request. `STUDY-GUIDE.md` is the plan for learning it afterwards. The table below is the original plan, kept for the acceptance criteria.
+
 One milestone at a time. Each ends with `pytest`, `ruff` and `mypy` clean, `docs/DECISIONS.md` and `CLAUDE.md` updated, a commit, and a stop for approval.
 
 "You" marks a hard core that you write against a stub and failing tests. Milestones are not sized in weeks, because the weekly time budget in `CLAUDE.md` is not filled in yet.

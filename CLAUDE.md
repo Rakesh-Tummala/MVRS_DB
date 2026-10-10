@@ -87,7 +87,25 @@ The C: drive is nearly full. Nothing from this project may be written to C:.
 
 ## Current status
 
-* **Current milestone:** Phase 0 (design documents) — written, awaiting my review. Do not start milestone 1.1 until I approve.
-* **Awaiting approval:** D-002 (two extra storage modules) and D-010 (log page images at commit, which deviates from the record types listed in `docs/ROADMAP.md`).
-* **Design docs:** `docs/01-architecture.md` to `docs/08-milestones.md`, plus `docs/DECISIONS.md`.
-* **Not done yet:** no `.venv`, no package, no code, no tests.
+* **Built (2026-10-11):** Phases 0 to 7. Storage, B+ tree, SQL, planner, write-ahead log and recovery, transactions with table locks, CLI, demo, benchmarks.
+* **Not built:** inner joins, MVCC, delta log records, B+ tree rebalancing on delete, vector search (Phase 8). See `docs/LIMITATIONS.md`.
+* **Next for me:** work through `docs/STUDY-GUIDE.md`, then write the case study in my own words.
+* **Docs:** `docs/01` to `docs/10`, `DECISIONS.md`, `LIMITATIONS.md`, `STUDY-GUIDE.md`. Benchmark report: `benchmarks/results/REPORT.md`.
+
+## Commands
+
+Set `TEMP` and `TMP` to `W:\a_db\.tmp` first (see Environment rules).
+
+* Tests: `.venv\Scripts\python.exe -m pytest -q` (add `-m "not crash"` to skip the slow crash tests)
+* Lint and format: `.venv\Scripts\python.exe -m ruff check .` and `.venv\Scripts\python.exe -m ruff format .`
+* Types: `.venv\Scripts\python.exe -m mypy kestreldb`
+* Benchmarks: `.venv\Scripts\python.exe benchmarks\run_benchmarks.py` (do not run tests at the same time; it skews the timings)
+* Demo: `.venv\Scripts\python.exe examples\demo.py`
+
+## Conventions in the code
+
+* Every module starts with a docstring explaining the idea, the on-disk layout if any, and the main trade-off.
+* Invariants have IDs (`H1`, `T4`, `B7`, ...) defined in `docs/07-invariants.md`; error messages and tests refer to them.
+* All deliberate errors derive from `KestrelError` in `kestreldb/errors.py`.
+* Layering is enforced by `tests/unit/test_layering.py`. Add a new package to its allow-list when creating one.
+* Crash injection points are named strings passed to `faults.crash_point()`; the crash tests select one through the `KESTREL_CRASH_AT` environment variable.

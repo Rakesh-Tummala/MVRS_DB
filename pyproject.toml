@@ -4,8 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kestreldb"
-version = "0.0.0"
+version = "0.1.0"
 description = "An educational relational database engine written from scratch in Python."
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
 
@@ -14,6 +15,9 @@ dev = ["pytest>=8", "hypothesis>=6", "ruff>=0.6", "mypy>=1.11"]
 cli = ["typer>=0.12"]
 bench = ["matplotlib>=3.8"]
 vector = ["numpy>=2"]
+
+[project.scripts]
+kestrel = "kestreldb.cli:app"
 
 [tool.setuptools.packages.find]
 include = ["kestreldb*"]
@@ -37,6 +41,11 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "BLE"]
 [tool.ruff.lint.per-file-ignores]
 # The keyword lists read better as whitespace-separated words than as list literals.
 "kestreldb/sql/lexer.py" = ["SIM905"]
+# typer declares arguments as call expressions in defaults; that is its API.
+"kestreldb/cli.py" = ["B008"]
+# The scripts import their sibling module after adjusting sys.path, and their
+# lambdas inside loops are called at once, before the loop variable changes.
+"benchmarks/*.py" = ["I001", "B023", "E402"]
 
 [tool.mypy]
 python_version = "3.12"

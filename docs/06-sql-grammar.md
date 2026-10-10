@@ -93,7 +93,9 @@ Precedence, loosest to tightest: `OR`, `AND`, `NOT`, comparison. This falls out 
 * `SELECT` without `ORDER BY` returns rows in no promised order.
 * `LIMIT` takes a non-negative integer.
 * `UPDATE` may change the primary key; uniqueness is checked.
-* A constraint violation fails the whole statement. Before Phase 4, the executor validates every row of a statement before changing anything; from Phase 4, the statement's transaction is rolled back.
+* A constraint violation fails the whole statement: a multi-row `INSERT` or `UPDATE` that fails on its third row leaves no trace of the first two. Inside `BEGIN` ... `COMMIT`, a statement that fails after changing something rolls back the whole transaction (see `10-transactions.md`).
+* `SET` accepts literals only (`SET n = 5`, not `SET n = n + 1`).
+* `table.column` names are not supported; a statement reads one table, so a bare column name is never ambiguous.
 
 ## Stretch (not in version 1)
 

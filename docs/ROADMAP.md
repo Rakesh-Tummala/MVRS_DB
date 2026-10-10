@@ -2,6 +2,8 @@
 
 The working rules and environment rules are in `CLAUDE.md`. This file holds the project vision, the architecture, and the requirements for each phase. Read the relevant phase before starting a milestone.
 
+**Status:** Phases 0 to 7 are built. See `08-milestones.md` for what was deferred and `LIMITATIONS.md` for what is missing. Where this roadmap says "I write", the code was in fact written by Claude at my request; `STUDY-GUIDE.md` is how I learn it.
+
 ## Vision
 
 KestrelDB is an educational but technically rigorous persistent relational database engine written in Python. It must implement, by ourselves:
@@ -164,15 +166,15 @@ Requirements:
 * **Rollback uses in-memory before-images.** Under no-force, a page in the pool can hold committed changes that are not on disk yet, so a failed statement cannot be undone by re-reading the page from disk. Keep before-images in memory for the running transaction and restore from them. They are never written to disk, so the log stays redo-only.
 * **Transaction size limit.** No-steal means a transaction that dirties more pages than the buffer pool can hold cannot proceed. Raise a specific "transaction too large" error, roll back, and list this as a known limitation.
 * **WAL buffer.** The WAL keeps a user-space buffer. Records in it are lost if the process dies before `flush()` + `fsync`. Without this buffer, bytes handed to the OS survive a process kill and the "written but not flushed" crash test proves nothing.
-* **Torn pages: full-page images.** The first modification of a page after a checkpoint logs the whole page image. Recovery restores a page whose checksum fails from its full-page image, then redoes later records. A checksum failure with no image in the log is reported as unrecoverable corruption, not papered over.
-* **Checkpoint.** Taken between transactions: flush all committed dirty pages, `fsync` the data file, then log the checkpoint record. A checkpoint never flushes pages of an active transaction (no-steal).
+* **Page images, written at commit (D-010).** Every page a transaction changed is logged as a whole after-image when it commits. This replaces the per-operation records first planned, and it makes torn-page repair automatic: recovery overwrites any page whose checksum fails with its newest image. A checksum failure with no image in the log is reported as corruption, not papered over.
+* **Checkpoint.** Taken between transactions: flush all committed dirty pages, `fsync` the data file, then empty the log. A checkpoint never flushes pages of an active transaction (no-steal).
 * **Recovery** = scan the log, redo committed transactions' changes that are not yet reflected on disk (using page LSNs), ignore uncommitted ones.
 
 Document the upgrade path to undo/redo (ARIES-style: steal, undo, CLRs, concurrent writers) in `docs/` as future work.
 
 Implement:
 
-* Log sequence numbers, transaction IDs, log record types (begin, update/insert/delete, structural change, full-page image, commit, abort, checkpoint), per-record checksums, and detection of a truncated or corrupt log tail. I write the record format and the redo pass.
+* Log sequence numbers, transaction IDs, log record types (page image, file header, commit), per-record checksums, and detection of a truncated or corrupt log tail.
 * Defined write ordering: log records for a page change are durable before that page reaches persistent storage (the WAL rule).
 * A precise, written definition of what a successful COMMIT guarantees, and what it does not.
 * A recovery manager and the checkpoint above.

@@ -1,6 +1,6 @@
 # 05 — Write-ahead log, torn writes and recovery
 
-This is the policy for Phase 4, written now so the storage format (page LSNs, `db_id`) supports it from the start. You write the record format and the redo pass; the framing below is a proposal for you to confirm or change in milestone 4.1.
+Code: `kestreldb/recovery/wal.py`, `kestreldb/recovery/recovery_manager.py`, and the commit and checkpoint code in `kestreldb/database.py`. Tests: `tests/unit/test_wal.py`, `tests/unit/test_recovery.py`, `tests/crash_recovery/`.
 
 ## The problem
 
@@ -18,19 +18,19 @@ Changing one row can modify several pages: a heap page, a B+ tree leaf, and more
 
 ### Log page after-images at commit
 
-During a transaction nothing is logged. At commit, for each page the transaction dirtied, the engine appends the page's **after-image** to the log, then a commit record, then flushes and `fsync`s once. This is how SQLite's WAL mode works.
+During a transaction nothing is logged. At commit, for each page the transaction dirtied, the engine appends the page's **after-image** to the log, then a commit record, then flushes and `fsync`s once. SQLite's WAL mode works the same way.
 
-* Structural changes need no special treatment. Allocating a page, changing the free list, updating the file header and writing a catalog record are all just modified pages.
+* Structural changes need no special treatment. Allocating a page, changing the free list and writing a catalog record are all just modified pages. The file header is not a page in the buffer pool, so it gets its own record type.
 * Redo is "put this page back", which is naturally repeatable.
 * An uncommitted transaction leaves at most a partial batch with no commit record, which recovery ignores.
 
-The cost is log volume: a 4 KiB image for a one-byte change. A later, optional milestone logs a byte-range *delta* for a page that already has an image since the last checkpoint. Phase 7 measures the difference.
+The cost is log volume: a 4 KiB image for a one-byte change. Delta records (logging only the changed bytes) would fix that and are not implemented; see `LIMITATIONS.md`.
 
-Alternative considered: one logical record per operation (insert row, split node), as in ARIES and PostgreSQL. It gives a much smaller log and is required for concurrent writers, but every operation needs its own redo code and structural changes need careful handling. See D-010. This is a deviation from the brief's list of record types (insert/update/delete/structural), which collapse into page images under this design.
+Alternative considered: one logical record per operation (insert row, split node), as in ARIES and PostgreSQL. It gives a much smaller log and is required for concurrent writers, but every operation needs its own redo code and structural changes need careful handling. See D-010.
 
 ### Rollback
 
-When a transaction first modifies a page, the engine keeps a copy of the page as it was (a **before-image**) in memory. Rollback copies the before-images back. They are never written to disk. Re-reading the page from disk would be wrong: under no-force, the in-memory page can hold earlier *committed* changes that have not reached the data file.
+When a transaction first modifies a page, the buffer pool keeps a copy of the page as it was (a **before-image**) in memory. Rollback copies the before-images back. They are never written to disk. Re-reading the page from disk would be wrong: under no-force, the in-memory page can hold earlier *committed* changes that have not reached the data file.
 
 ### Transaction size
 
@@ -38,11 +38,11 @@ No-steal means a transaction's dirty pages stay in the buffer pool until commit.
 
 ## Log file
 
-`name.kdb.wal` has a small header (magic, version, page size, `db_id`, `base_lsn`, CRC) followed by records.
+`name.kdb.wal`: a 40-byte header, then records back to back.
 
-**LSN** (log sequence number): a 64-bit number that only increases. It is `base_lsn` plus the record's byte offset after the header. When the log is emptied at a checkpoint, `base_lsn` moves forward so LSNs never repeat.
+Header (`<8sHHIQQ4sI`): magic `KESTWAL\0`, version, reserved, page size, `db_id`, `base_lsn`, reserved, CRC32 of the 36 bytes before it. `db_id` must match the data file, so a log can never be replayed into the wrong database.
 
-Proposed record framing:
+Record (`<IIQQB` + payload):
 
 | Field | Size | Notes |
 |---|---|---|
@@ -50,22 +50,37 @@ Proposed record framing:
 | `crc` | 4 | CRC32 of everything else in the record |
 | `lsn` | 8 | Must equal the record's computed position |
 | `txn_id` | 8 | |
-| `type` | 1 | `BEGIN`, `PAGE_IMAGE`, `PAGE_DELTA`, `COMMIT`, `ABORT`, `CHECKPOINT` |
-| payload | `length` | For `PAGE_IMAGE`: page ID + page bytes |
+| `type` | 1 | 1 `PAGE_IMAGE`, 2 `HEADER`, 3 `COMMIT` |
+| payload | `length` | `PAGE_IMAGE`: page ID (4 bytes) + the page. `HEADER`: the 64-byte file header. `COMMIT`: empty. |
 
-**Finding the end of the log.** Reading stops at the first record that is incomplete, has an impossible length, fails its CRC, or carries the wrong LSN. Everything from there on is discarded. The stored LSN catches leftover bytes from before a checkpoint that happen to have a valid CRC.
+There is no BEGIN or ABORT record. A transaction's records are written together at commit, so the first record with a new `txn_id` is its beginning, and a transaction that aborts never writes anything.
 
-**User-space buffer.** The log writer accumulates records in memory. `flush()` hands them to the OS and `fsync` makes them durable. A process killed before `flush()` loses them. Without this buffer, bytes passed to the OS would survive a process kill and the "written but not flushed" crash test would prove nothing.
+**LSN** (log sequence number): a 64-bit number that only increases. It is `base_lsn` plus the record's byte offset after the header. When a checkpoint empties the log, `base_lsn` moves forward so LSNs never repeat. The data file header stores the LSN of the last checkpoint, so LSNs keep growing even if the log file is lost.
+
+**Finding the end of the log.** Reading stops at the first record that is incomplete, has an impossible length, fails its CRC, or carries the wrong LSN. Everything from there on is treated as never written. The stored LSN catches leftover records from before a checkpoint that have valid CRCs.
+
+**User-space buffer.** `append()` only adds to a buffer in the process. `flush()` hands the bytes to the OS and `fsync` makes them durable. A process killed before `flush()` loses them. Without this buffer, bytes passed to the OS would survive a process kill and a "written but not flushed" crash test would prove nothing.
+
+## Commit, step by step
+
+1. If the header changed, append a `HEADER` record.
+2. For each changed page: set the page's `lsn` field to the LSN its record is about to get, then append a `PAGE_IMAGE` record.
+3. Append a `COMMIT` record.
+4. `flush()` and `fsync` the log.
+5. Tell the buffer pool the transaction is over. Its pages are now ordinary dirty pages.
+
+The transaction is committed when step 4 returns. If the process dies before then, the transaction never happened.
 
 ## Write ordering (the WAL rule)
 
-A page may be written to the data file only when the log is durable up to that page's LSN. Under commit-time logging this means: only pages of committed transactions, and only after their commit `fsync`.
+A page may be written to the data file only when the log is durable up to that page's LSN. Two mechanisms enforce it:
 
-Each logged page has its header `lsn` set to the LSN of its image record before the image is taken.
+* A page of an uncommitted transaction is never written at all (no-steal).
+* Before writing any page, the buffer pool calls the log's `sync()`. With synchronous commits there is never anything left to sync. With `synchronous=False`, commits skip the `fsync`, and this call is what keeps a page from reaching disk ahead of its log record.
 
 ## What COMMIT guarantees
 
-When `commit()` returns successfully:
+When `commit` returns successfully with the default `synchronous=True`:
 
 * Every page image of the transaction and its commit record are in the log file, and `os.fsync` on the log returned without error.
 * After a process crash, recovery restores all of the transaction's effects.
@@ -74,49 +89,66 @@ When `commit()` returns successfully:
 It does **not** guarantee:
 
 * Survival of a failed or lying disk.
-* Anything about transactions after a damaged record in the middle of the log. A damaged record is indistinguishable from the end of the log, so later commits are lost. This is a stated limitation.
+* Anything about transactions after a damaged record in the middle of the log. A damaged record is indistinguishable from the end of the log, so later commits are lost.
 * That the data file is up to date. It may be arbitrarily behind the log.
 
-If `fsync` fails, the commit fails and the engine refuses further writes until reopened. It does not retry: after a failed `fsync` the OS may have dropped the data while reporting success on the second attempt.
+With `synchronous=False`, a commit survives a crash of the process but can be lost if the operating system crashes or the power fails. The database stays consistent either way.
+
+If writing or syncing the log fails, the commit fails, the in-memory changes are rolled back, and the engine refuses further writes with `EngineFailedError` until it is reopened. It does not retry: after a failed `fsync` the OS may have dropped the data while reporting success on the second attempt. Reopening runs recovery, which settles whether the commit made it.
 
 ## Torn pages
 
 A torn page is a page write interrupted halfway: part new, part old.
 
 * **Detection:** the page checksum fails on read.
-* **Repair:** every page written to the data file was dirtied after the last checkpoint (a checkpoint leaves all pages clean), so its full image is in the log. Recovery overwrites the page with that image.
-* **No image available:** if a page fails its checksum and the log has no image for it, the damage did not come from a torn write we can repair. The engine raises `UnrecoverableCorruptionError` and does not guess.
-* **Phases 1–3:** torn pages are detected and reported but not repaired, because there is no log yet.
+* **Repair:** recovery treats a page with a bad checksum as older than any image and overwrites it whole. Every page written since the last checkpoint has an image in the log, because a checkpoint leaves all pages clean and every later change is logged at commit.
+* **No image available:** a page that fails its checksum and has no image in the log was not damaged by a torn write we can repair. Nothing touches it during recovery; reading it later raises `ChecksumMismatchError`, and `Database.check()` reports it.
 
 Assumption: a write that fits in one 512-byte disk sector is atomic. The log header and the data file header rely on this.
 
 ## Checkpoint
 
-A checkpoint bounds the log's size and recovery time. It runs between transactions:
+A checkpoint bounds the log's size and recovery time. It runs between transactions, holding the writer slot:
 
-1. Write every dirty page to the data file. All are committed, because no transaction is active.
-2. `fsync` the data file.
-3. Append a `CHECKPOINT` record and `fsync` the log.
-4. Advance `base_lsn` in the log header, `fsync`, then truncate the log to the header.
+1. Record the last LSN in the file header.
+2. Write every dirty page and the header to the data file. All are committed, because no transaction is active.
+3. `fsync` the data file.
+4. Rewrite the log header with a new `base_lsn`, `fsync`, then truncate the log to the header and `fsync` again.
 
-A crash at any step is safe: until step 4 completes, the old log is intact and redo simply repeats work. Truncation is done in place, because Windows cannot rename or delete an open file.
+A crash at any step is safe. Until step 4, the old log is intact and recovery repeats work. Between rewriting the header and truncating, the leftover records have LSNs below the new base and are ignored. Truncation is done in place, because Windows cannot rename or delete an open file.
 
-Checkpoints run when the log passes a size threshold, on clean close, and at the end of recovery.
+Checkpoints run when the log passes 8 MiB (configurable), on clean close, and at the end of recovery.
 
 ## Recovery
 
-On open, if the log has records:
+On open, before anything else reads the data file:
 
-1. **Scan** the log to its end and collect the transaction IDs that have a `COMMIT` record.
-2. **Redo** in LSN order, for records of committed transactions only. For each page record: read the page; if its checksum is valid and its `lsn` is at least the record's LSN, skip it; otherwise apply the record and set the page's `lsn`.
-3. **Checkpoint**, which empties the log.
+1. **Scan** the log to its valid end and collect the transaction IDs that have a `COMMIT` record.
+2. **Redo.** Apply the newest committed `HEADER`, if any. For each page, take the newest image belonging to a committed transaction; write it unless the page on disk has a valid checksum and an `lsn` at least as new.
+3. **Finish.** Write the header, `fsync` the data file, check that the file length matches the header, then empty the log.
 
-**Idempotent:** recovery changes only pages whose LSN is behind the log, and leaves the log untouched until its final checkpoint. Crashing during recovery and running it again reaches the same state.
+**Idempotent:** recovery only moves pages forward to a state the log fully describes, and leaves the log untouched until the data file is synced. Crashing during recovery and running it again reaches the same state.
 
-## Upgrade path (future work, not built)
+## What is tested
+
+58 tests in `tests/crash_recovery/` start a child process, kill it with `os._exit` at an injected point (`kestreldb/faults.py`), reopen, and check durability, atomicity and `Database.check()`. Two workloads are used: row changes across two indexes, and creating and dropping tables.
+
+| Crash point | Outcome required for the transaction in flight |
+|---|---|
+| Before any log record is written | absent |
+| Records in the user-space buffer, not written | absent |
+| Half the commit's records written (truncated tail) | absent |
+| Commit record written, not yet fsynced | present (a killed process cannot lose bytes the OS has) |
+| Commit record fsynced, commit not yet returned | present |
+| Start of, middle of, and end of a checkpoint | present |
+| Between rewriting the log header and truncating it | present |
+| Halfway through a page write, at four different moments | either, never half |
+| During database creation | a usable empty database |
+| During recovery (five points), twice in a row | same result as uninterrupted recovery |
+| Log truncated at 25 offsets; a byte flipped in each of the last 12 records | a whole number of transactions survives |
+
+Not tested: real power loss, drives that ignore `fsync`, damage in the middle of the log followed by valid records, and media failure. A killed process leaves the operating system running, so these tests cannot show that `fsync` itself works.
+
+## Upgrade path (not built)
 
 To support concurrent writers and transactions larger than memory, move to ARIES-style logging: per-operation log records, **steal** (uncommitted pages may be written), **undo** records and an undo pass, compensation log records so undo is itself recoverable, and a dirty-page table for fuzzy checkpoints.
-
-## What is and is not tested
-
-Tested by killing a real child process at injected points: the crash matrix in `docs/ROADMAP.md`. Not tested: real power loss, drives that ignore `fsync`, damage in the middle of the log, and media failure.

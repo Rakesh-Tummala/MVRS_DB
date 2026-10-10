@@ -24,7 +24,7 @@ The first 64 bytes are the header. The rest of page 0 is zero. The header is rea
 | 12 | 4 | `page_size` | 4096, 8192, 16384 or 32768 |
 | 16 | 4 | `page_count` | Pages in the file, including page 0 |
 | 20 | 4 | `free_list_head` | First free page, 0 = none |
-| 24 | 4 | `catalog_root` | 1 |
+| 24 | 4 | `catalog_root` | First page of the catalog; 0 only until the catalog is created on first open |
 | 28 | 4 | reserved | 0 |
 | 32 | 8 | `lsn` | Last log record that changed the header (0 before Phase 4) |
 | 40 | 8 | `db_id` | Random at creation; ties the WAL to this file |
@@ -123,20 +123,33 @@ The decoder rejects, with `CorruptRecordError`: an unknown format byte, set bits
 
 A table is a chain of heap pages linked by `next_page`. Its first page never changes for the life of the table.
 
-The catalog is itself a chain of heap pages starting at page 1. Each catalog record is one table definition in its own explicit binary layout (finalised in milestone 1.5): a format byte, table ID, table name, first heap page, the columns (name, type, flags for `NOT NULL` / `PRIMARY KEY` / `UNIQUE`), and the indexes (column, root page). On open, the engine reads the whole chain into memory.
+The catalog is itself a chain of heap pages, starting at the page named by `catalog_root` (page 1 in practice). Each catalog record is one table definition in its own explicit binary layout (`catalog/schema.py`):
+
+```
+[format u8 = 1][table_id u32][first_heap_page u32]
+[name_len u8][name]
+[column_count u16]
+per column: [name_len u8][name][type u8][flags u8][index_root u32]
+```
+
+`flags`: bit 0 `NOT NULL`, bit 1 `PRIMARY KEY`, bit 2 `UNIQUE`. `index_root` is the root page of the column's B+ tree, or 0 if the column has no index. It is not the row format, because the catalog has to be readable before any schema is known. On open, the engine reads the whole chain into memory.
+
+Creating the catalog is the first logged transaction of a new database, so a crash during creation leaves a file that is simply initialised again on the next open.
 
 **Index root pages never move.** When a root splits, its contents are copied to a new page and the root page is rewritten in place as the new root. The catalog therefore never needs updating because of a split.
 
 ## Page allocation and freeing
 
 * **Free list.** Free pages form a linked list. `free_list_head` in the file header points at the first; each free page (type 1) stores the next free page ID as a `u32` at offset 24.
-* **Allocate:** pop the head of the free list; if it is empty, extend the file by one page and increase `page_count`. The new page is formatted with a valid header before use.
+* **Allocate:** pop the head of the free list; if it is empty, increase `page_count`. Growing is *logical*: the new page exists only in the buffer pool, and the file gets longer when the page is first written. Nothing uncommitted touches the disk.
 * **Free:** rewrite the page as type 1 and push it on the list.
-* **Finding room for a record.** Each open table keeps an in-memory map of `page → free bytes`, built by walking the table's chain the first time it is written after open. It is never stored on disk, so it cannot become inconsistent after a crash.
+* **Finding room for a record.** Each open table keeps an in-memory map of `page → free bytes`, built by walking the table's chain the first time it is written after open. Pages are grouped into power-of-two size classes, so finding a page with enough room is a constant-time lookup. The map is never stored on disk, so it cannot become inconsistent after a crash.
+
+Because allocation is logical, the header on disk can lag behind the file between checkpoints. The "file length = page count × page size" check (F1) therefore runs after recovery, which brings the header up to date from the log.
 
 ## How indexes reference records
 
-A B+ tree maps **key bytes** to a RID. Keys are compared as raw bytes, so each type has an order-preserving encoding (big-endian integer with the sign bit flipped, UTF-8 for text, a transformed IEEE layout for reals). The tree never needs to know column types. The node layout is designed in Phase 2; it will use the common page header, a slotted cell area like the heap page, a right-sibling pointer in leaves, and a leftmost-child pointer in internal nodes.
+A B+ tree maps **key bytes** to a RID. Keys are compared as raw bytes, so each type has an order-preserving encoding (big-endian integer with the sign bit flipped, UTF-8 for text, a transformed IEEE layout for reals). The tree never needs to know column types. The node layout and algorithms are in `09-btree.md`.
 
 Duplicate-key policy: the tree stores each key once and rejects a second insert of the same key. That is all a primary-key or unique index needs.
 

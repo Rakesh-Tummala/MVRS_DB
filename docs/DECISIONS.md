@@ -92,6 +92,80 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 * **Reason:** A torn tail and mid-log damage look the same. Continuing past a bad record could apply later changes on top of a missing one. Recorded as a limitation.
 * **Date:** 2026-10-10
 
+## D-020 — D-002 and D-010 approved; phases built in one pass
+* **Decision:** I approved the extra storage modules and page-image logging with "go ahead", then asked for all phases to be built without stopping and with Claude writing every component, including the four I had reserved for myself.
+* **Alternatives:** The original gated, write-it-yourself plan.
+* **Reason:** I chose to get a complete, tested engine first and study it afterwards. `STUDY-GUIDE.md` is the plan for that. The risk is that I end up with code I cannot explain; the guide's questions are how I check.
+* **Date:** 2026-10-11
+
+## D-021 — Page allocation is logical until the page is written
+* **Decision:** Allocating a page only increases the in-memory page count. The file grows when the page is first flushed, and the header on disk is updated at checkpoints.
+* **Alternatives:** Extend the file immediately (the first disk manager did this).
+* **Reason:** Extending the file inside a transaction would put uncommitted state on disk and would have to be undone on rollback. Cost: the header can lag the file after a crash, so the length check runs after recovery.
+* **Date:** 2026-10-11
+
+## D-022 — The file header is logged as its own record type
+* **Decision:** `HEADER` records carry the 64-byte header; pages use `PAGE_IMAGE`.
+* **Alternatives:** Keep page 0 in the buffer pool and log it as a page.
+* **Reason:** The header is tiny and has its own layout and checksum. Snapshotting it at `BEGIN` and restoring it on rollback is one assignment.
+* **Date:** 2026-10-11
+
+## D-023 — No BEGIN, ABORT or CHECKPOINT log records
+* **Alternatives:** The classic set of record types.
+* **Reason:** A transaction's records are written together at commit, so nothing marks its start and an aborted one writes nothing. A checkpoint empties the log, so there is nothing for a checkpoint record to point at.
+* **Date:** 2026-10-11
+
+## D-024 — The WAL rule is enforced through a callback into the buffer pool
+* **Alternatives:** Let `storage/` import `recovery/`; or rely on commits always being synced.
+* **Reason:** With `synchronous=False` a committed page could otherwise reach the data file before its log record was durable. The callback keeps the layering rule and makes the pool enforce the ordering in every mode.
+* **Date:** 2026-10-11
+
+## D-025 — Dirtiness is declared at fetch, not at unpin
+* **Alternatives:** `unpin(page_id, dirty=True)`, as originally sketched.
+* **Reason:** The before-image has to be taken before the caller changes the page, which is at fetch. One flag at one moment cannot be forgotten.
+* **Date:** 2026-10-11
+
+## D-026 — B+ tree: no rebalancing on delete; uneven split when appending
+* **Alternatives:** Merge and redistribute on underflow; always split in the middle.
+* **Reason:** Rebalancing is the most error-prone part of a B+ tree and PostgreSQL also does without it. Splitting unevenly at the right edge keeps leaves full for keys that arrive in order, which roughly halves index size for auto-numbered keys.
+* **Date:** 2026-10-11
+
+## D-027 — B+ tree nodes are decoded and rewritten whole on change
+* **Alternatives:** Edit cells in place inside the page.
+* **Reason:** Split logic over Python lists is short and easy to check. Searches do not pay for it: they binary-search the page directly. Listed as a bottleneck in the benchmark report.
+* **Date:** 2026-10-11
+
+## D-028 — A statement that fails after changing pages rolls back its whole transaction
+* **Alternatives:** Statement-level savepoints.
+* **Reason:** Before-images are kept per transaction. A statement that fails before changing anything leaves the transaction open; the engine tells the cases apart by counting page changes.
+* **Date:** 2026-10-11
+
+## D-029 — Strict two-phase locking with table locks and a single writer slot
+* **Alternatives:** Row-level locks; MVCC.
+* **Reason:** Required by page-image logging (D-012), and table locks also prevent phantoms without extra machinery. New readers queue behind a waiting writer so writers are not starved, a problem the concurrency tests exposed.
+* **Date:** 2026-10-11
+
+## D-030 — Deadlock victim is the transaction that would close the cycle
+* **Alternatives:** Abort the youngest, or the one that has done the least work.
+* **Reason:** Simplest policy that is always correct. The application retries.
+* **Date:** 2026-10-11
+
+## D-031 — Optimiser constants come from measurement on a warm cache
+* **Decision:** `ROW_CPU = 0.28`, `INDEX_ROW = 0.63`, `SORT_ROW = 0.005`, with one sequential page as the unit.
+* **Alternatives:** Textbook constants that assume random disk I/O.
+* **Reason:** Measured with `benchmarks/calibrate_optimizer.py`. With pages in memory an index fetch costs only about twice a scanned row, so the index stays worthwhile until a third to a half of the table matches. The constants would be wrong on a cold spinning disk.
+* **Date:** 2026-10-11
+
+## D-032 — The full WHERE clause is re-applied above every index scan
+* **Alternatives:** Remove the conditions the index already guarantees.
+* **Reason:** A small cost for the guarantee that range extraction can never change a query's result. A parametrised test compares every plan against a full scan.
+* **Date:** 2026-10-11
+
+## D-033 — One lock file per database, held with an operating-system lock
+* **Alternatives:** A lock file whose mere existence means "locked".
+* **Reason:** The OS releases the lock when the process dies, so a crash never leaves the database unopenable.
+* **Date:** 2026-10-11
+
 ## D-019 — Optional dependencies only
 * **Alternatives:** Make `typer` a hard dependency.
 * **Reason:** The engine installs with no third-party packages. `typer`, test tools, `matplotlib` and `numpy` are extras.

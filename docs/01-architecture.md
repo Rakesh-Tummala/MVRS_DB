@@ -44,7 +44,16 @@ KestrelDB is a stack of layers. Each layer talks only to the layer directly belo
 | `recovery` | Log records, commit durability, redo after a crash | SQL |
 | `transactions` | Transaction lifetime, locks, before-images | SQL syntax |
 
-Two modules are added to the tree in the brief: `storage/record.py` (the record codec) and `storage/heap_file.py` (table storage). The brief had no home for either. See D-002.
+Modules that the original brief's tree did not list, and why they exist:
+
+| Module | Why |
+|---|---|
+| `storage/record.py`, `storage/heap_page.py`, `storage/heap_file.py` | The record codec, the slotted-page layout and table storage are three separate jobs (D-002). |
+| `index/keys.py` | Order-preserving key encoding, kept apart from the tree so the tree stays type-agnostic. |
+| `database.py` | The public `Database` and `Connection` classes: opening, recovery, locking, commit, checkpoint. It is the only module that knows about every layer. |
+| `faults.py` | Crash injection points used by the crash tests. A leaf module like `config.py` and `errors.py`. |
+
+`transactions/mvcc.py` from the brief does not exist, because MVCC was not built.
 
 ## What happens on `SELECT name FROM users WHERE id = 7`
 
@@ -69,4 +78,9 @@ Two modules are added to the tree in the brief: `storage/record.py` (the record 
 
 ## Dependency rule
 
-A module may import from layers below it, never from layers above. `storage/` imports nothing from `index/`, `sql/`, `execution/` or `cli.py`. This is checked by a test that scans imports (added in milestone 1.1).
+A module may import from layers below it, never from layers above. `storage/` imports nothing from `index/`, `sql/`, `execution/` or `cli.py`. `tests/unit/test_layering.py` enforces this by parsing every source file's imports against an allow-list per layer.
+
+Two places bend the simple stack, both deliberately:
+
+* The planner builds trees of operators, so it sits above `execution/operators.py` and `execution/expressions.py`. Only `execution/executor.py`, which drives the planner, imports it back.
+* The buffer pool must not write a page before the log is durable, but `storage/` may not import `recovery/`. The database passes the log's `sync` function into the pool as a plain callback.
