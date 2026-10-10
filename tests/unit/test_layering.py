@@ -8,8 +8,10 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "kestreldb"
 
 # What each layer may import from inside kestreldb. Extended as layers are added.
+BASE = {"kestreldb.config", "kestreldb.errors", "kestreldb.faults"}  # leaf modules, no layer
 ALLOWED_INTERNAL_IMPORTS = {
-    "storage": {"kestreldb.config", "kestreldb.errors", "kestreldb.storage"},
+    "storage": BASE | {"kestreldb.storage"},
+    "index": BASE | {"kestreldb.storage", "kestreldb.index"},
 }
 
 

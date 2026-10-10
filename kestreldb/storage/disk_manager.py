@@ -32,7 +32,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 
-from kestreldb import config
+from kestreldb import config, faults
 from kestreldb.errors import (
     CorruptFileError,
     CorruptHeaderError,
@@ -160,6 +160,7 @@ class DiskManager:
         self._fd: int | None = fd
         self._path = path
         self._header = header
+        self._header_dirty = False
         # Windows has no pread/pwrite, so seek + read must be one atomic step.
         self._lock = threading.Lock()
 
@@ -203,8 +204,14 @@ class DiskManager:
         return cls(fd, file_path, header)
 
     @classmethod
-    def open(cls, path: str | os.PathLike[str]) -> DiskManager:
-        """Open an existing database file. A file that fails validation is not modified."""
+    def open(cls, path: str | os.PathLike[str], *, check_length: bool = True) -> DiskManager:
+        """Open an existing database file. A file that fails validation is not modified.
+
+        `check_length=False` skips the "file length matches the header" check. The
+        database layer uses it because after a crash the header on disk can lag
+        behind the file until recovery has replayed the log; it then calls
+        verify_length() itself.
+        """
         file_path = Path(path)
         try:
             fd = os.open(file_path, os.O_RDWR | _O_BINARY)
@@ -215,20 +222,27 @@ class DiskManager:
 
         try:
             header = FileHeader.unpack(_read_up_to(fd, 0, config.FILE_HEADER_SIZE))
-            actual_size = os.fstat(fd).st_size
-            expected_size = header.page_count * header.page_size
-            if actual_size != expected_size:
-                raise CorruptFileError(
-                    f"{file_path}: file is {actual_size} bytes but its header describes "
-                    f"{header.page_count} pages of {header.page_size} bytes ({expected_size})"
-                )
+            manager = cls(fd, file_path, header)
+            if check_length:
+                manager.verify_length()
         except OSError as exc:
             os.close(fd)
             raise StorageIOError(f"cannot read {file_path}: {exc}") from exc
         except BaseException:
             os.close(fd)
             raise
-        return cls(fd, file_path, header)
+        return manager
+
+    def verify_length(self) -> None:
+        """Check invariant F1: file length == page_count * page_size."""
+        actual_size = os.fstat(self._require_open()).st_size
+        expected_size = self._header.page_count * self._header.page_size
+        if actual_size != expected_size:
+            raise CorruptFileError(
+                f"{self._path}: file is {actual_size} bytes but its header describes "
+                f"{self._header.page_count} pages of {self._header.page_size} bytes "
+                f"({expected_size})"
+            )
 
     def close(self) -> None:
         """Flush to disk and close. Safe to call more than once."""
@@ -308,7 +322,42 @@ class DiskManager:
         buf = bytearray(data)
         check_header(buf, page_id)
         stamp_checksum(buf)
+        if faults.armed("disk.torn_page_write"):
+            # Simulate power loss halfway through a page write.
+            self._pwrite(page_id * self.page_size, buf[: self.page_size // 2])
+            faults.crash()
         self._pwrite(page_id * self.page_size, buf)
+
+    # ------------------------------------------------------------------ header
+
+    def set_header(self, header: FileHeader) -> None:
+        """Replace the in-memory header. Nothing is written until flush_header()."""
+        self._require_open()
+        self._header = header
+        self._header_dirty = True
+
+    def flush_header(self) -> None:
+        """Write the in-memory header to page 0 if it has changed."""
+        if self._header_dirty:
+            self._write_header(self._header)
+
+    def allocate(self) -> int:
+        """Reserve the next page ID by growing the *logical* page count.
+
+        No I/O happens. The page exists only in the buffer pool until it is
+        flushed, and the header on disk is updated at the next checkpoint. This
+        keeps uncommitted allocations off the disk (the no-steal rule).
+        """
+        self._require_open()
+        new_id = self._header.page_count
+        if new_id > config.MAX_PAGE_ID:
+            raise DatabaseFullError(f"{self._path}: cannot grow past {config.MAX_PAGE_ID} pages")
+        self.set_header(replace(self._header, page_count=new_id + 1))
+        return new_id
+
+    def physical_page_count(self) -> int:
+        """Whole pages currently in the file, which may lag the logical count."""
+        return os.fstat(self._require_open()).st_size // self.page_size
 
     def extend(self) -> int:
         """Grow the file by one page and return its ID.
@@ -362,6 +411,7 @@ class DiskManager:
     def _write_header(self, header: FileHeader) -> None:
         self._pwrite(0, header.pack())
         self._header = header
+        self._header_dirty = False
 
     def _pread(self, offset: int, length: int) -> bytes:
         fd = self._require_open()

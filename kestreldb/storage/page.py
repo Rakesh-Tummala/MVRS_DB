@@ -73,6 +73,25 @@ def read_header(buf: Buffer) -> PageHeader:
     return PageHeader(*PAGE_HEADER.unpack_from(buf, 0))
 
 
+_LSN = struct.Struct("<Q")
+_LSN_OFFSET = 8
+_TYPE_OFFSET = 16
+
+
+def page_type_of(buf: Buffer) -> int:
+    """The raw page type byte."""
+    return buf[_TYPE_OFFSET]
+
+
+def page_lsn(buf: Buffer) -> int:
+    lsn: int = _LSN.unpack_from(buf, _LSN_OFFSET)[0]
+    return lsn
+
+
+def set_page_lsn(buf: bytearray, lsn: int) -> None:
+    _LSN.pack_into(buf, _LSN_OFFSET, lsn)
+
+
 def compute_checksum(buf: Buffer) -> int:
     """CRC32 of everything after the checksum field."""
     return zlib.crc32(memoryview(buf)[_CHECKSUM_SIZE:])

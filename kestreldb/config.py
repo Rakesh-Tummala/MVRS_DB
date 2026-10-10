@@ -18,3 +18,26 @@ ALLOWED_PAGE_SIZES = (4096, 8192, 16384, 32768)
 
 # Page IDs are 32-bit unsigned. Page 0 is the file header.
 MAX_PAGE_ID = 2**32 - 1
+
+# --- buffer pool ---
+DEFAULT_BUFFER_PAGES = 1024
+MIN_BUFFER_PAGES = 8
+
+# --- index ---
+MAX_KEY_SIZE = 255
+
+# --- write-ahead log ---
+WAL_MAGIC = b"KESTWAL\x00"
+WAL_FORMAT_VERSION = 1
+WAL_SUFFIX = ".wal"
+LOCK_SUFFIX = ".lock"
+# The log is emptied by a checkpoint once it grows past this many bytes.
+DEFAULT_CHECKPOINT_BYTES = 8 * 1024 * 1024
+
+# --- SQL ---
+MAX_SQL_LENGTH = 1024 * 1024
+MAX_IDENTIFIER_LENGTH = 63
+MAX_COLUMNS = 64
+
+# --- transactions ---
+DEFAULT_LOCK_TIMEOUT_SECONDS = 10.0

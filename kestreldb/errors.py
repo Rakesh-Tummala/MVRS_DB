@@ -11,6 +11,13 @@ class KestrelError(Exception):
     """Base class for all KestrelDB errors."""
 
 
+class InternalError(KestrelError):
+    """An internal invariant was violated. This is a bug in KestrelDB."""
+
+
+# ---------------------------------------------------------------- storage
+
+
 class StorageError(KestrelError):
     """A failure in the storage layer."""
 
@@ -29,6 +36,10 @@ class DatabaseExistsError(StorageError):
 
 class DatabaseClosedError(StorageError):
     """The database was used after close()."""
+
+
+class DatabaseLockedError(StorageError):
+    """Another process (or another handle in this process) has the database open."""
 
 
 class DatabaseFullError(StorageError):
@@ -55,6 +66,26 @@ class InvalidPageBufferError(StorageError):
     """A buffer handed to the storage layer is not exactly one page long."""
 
 
+class InvalidRecordIdError(StorageError):
+    """A record ID does not refer to a live record."""
+
+
+class InvalidValueError(StorageError):
+    """A value cannot be stored in a column of the given type."""
+
+
+class RecordTooLargeError(StorageError):
+    """A record does not fit in one page."""
+
+
+class BufferPoolFullError(StorageError):
+    """Every frame in the buffer pool is pinned, so no page can be loaded."""
+
+
+class PagePinError(StorageError):
+    """A page was unpinned more often than it was pinned."""
+
+
 class CorruptionError(StorageError):
     """Bytes on disk are not what KestrelDB wrote."""
 
@@ -68,7 +99,7 @@ class CorruptFileError(CorruptionError):
 
 
 class CorruptPageError(CorruptionError):
-    """A page's header fields are invalid."""
+    """A page's header fields or layout are invalid."""
 
 
 class ChecksumMismatchError(CorruptPageError):
@@ -77,3 +108,103 @@ class ChecksumMismatchError(CorruptPageError):
 
 class PageIdMismatchError(CorruptPageError):
     """A page's header names a different page ID than the one requested."""
+
+
+class CorruptRecordError(CorruptionError):
+    """Record bytes do not decode against the table's schema."""
+
+
+class CorruptIndexError(CorruptionError):
+    """A B+ tree violates one of its invariants."""
+
+
+class CorruptCatalogError(CorruptionError):
+    """A catalog record cannot be decoded."""
+
+
+# ---------------------------------------------------------------- index
+
+
+class DuplicateKeyError(KestrelError):
+    """The key is already present in a unique index."""
+
+
+class KeyTooLargeError(KestrelError):
+    """An index key is longer than the maximum key size."""
+
+
+# ---------------------------------------------------------------- log and recovery
+
+
+class WalError(KestrelError):
+    """A failure in the write-ahead log."""
+
+
+class CorruptWalError(WalError, CorruptionError):
+    """The log file's header is damaged."""
+
+
+class WalMismatchError(WalError):
+    """The log file belongs to a different database."""
+
+
+class EngineFailedError(KestrelError):
+    """A durability step failed earlier; the database must be reopened before writing."""
+
+
+# ---------------------------------------------------------------- transactions
+
+
+class TransactionError(KestrelError):
+    """Misuse of the transaction interface, or a transaction that had to be aborted."""
+
+
+class TransactionTooLargeError(TransactionError):
+    """The transaction changed more pages than the buffer pool can hold."""
+
+
+class DeadlockError(TransactionError):
+    """Granting this lock would create a cycle of waiting transactions."""
+
+
+class LockTimeoutError(TransactionError):
+    """A lock could not be acquired within the timeout."""
+
+
+# ---------------------------------------------------------------- SQL
+
+
+class SqlError(KestrelError):
+    """A problem with a SQL statement."""
+
+
+class SqlSyntaxError(SqlError):
+    """The statement is not valid in KestrelDB's SQL subset."""
+
+
+class QueryTooLargeError(SqlError):
+    """The statement text exceeds the size limit."""
+
+
+class CatalogError(SqlError):
+    """A problem with table or column definitions."""
+
+
+class TableExistsError(CatalogError):
+    """A table with this name already exists."""
+
+
+class TableNotFoundError(CatalogError):
+    """No table has this name."""
+
+
+class ColumnNotFoundError(CatalogError):
+    """The table has no column with this name."""
+
+
+class TypeMismatchError(SqlError):
+    """A value or comparison has incompatible types."""
+
+
+class ConstraintViolationError(SqlError):
+    """A NOT NULL, PRIMARY KEY or UNIQUE constraint would be violated."""

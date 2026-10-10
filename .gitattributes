@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.kdb binary
+*.wal binary
+*.png binary
