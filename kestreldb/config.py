@@ -1,0 +1,20 @@
+"""Constants that define the on-disk format and the engine's limits.
+
+See docs/02-scope-and-limits.md and docs/03-storage-format.md.
+"""
+
+from __future__ import annotations
+
+# --- data file header (page 0) ---
+MAGIC = b"KESTREL\x00"
+FILE_FORMAT_VERSION = 1
+FILE_HEADER_SIZE = 64
+
+# --- pages ---
+PAGE_FORMAT_VERSION = 1
+DEFAULT_PAGE_SIZE = 4096
+# In-page offsets are 16-bit, so a page can be at most 32768 bytes.
+ALLOWED_PAGE_SIZES = (4096, 8192, 16384, 32768)
+
+# Page IDs are 32-bit unsigned. Page 0 is the file header.
+MAX_PAGE_ID = 2**32 - 1

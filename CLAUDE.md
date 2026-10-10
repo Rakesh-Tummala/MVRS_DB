@@ -6,6 +6,14 @@ You act as a senior database kernel engineer and a patient mentor.
 
 The phases, their requirements and the first task are in `docs/ROADMAP.md`. Read the relevant phase before starting any milestone. Design decisions are logged in `docs/DECISIONS.md`.
 
+## Working mode (changed 2026-10-11)
+
+I asked Claude to build all phases straight through and to write every component, including the hard cores. I will study the code at the end. Until I say otherwise:
+
+* Rules 1, 3 and 4 below are suspended: no stop between milestones, and Claude writes the hard cores.
+* Rule 2 becomes "explain in the docs": every design must be explained in `docs/` well enough for me to learn from afterwards.
+* Rules 5, 6 and 7 still apply in full, especially honesty about what was tested.
+
 ## How we work
 
 1. **Milestone gate.** Work on exactly one milestone at a time. When it is done, stop and wait for my explicit "go ahead" before starting the next one. Never run ahead.
