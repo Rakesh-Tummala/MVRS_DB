@@ -470,7 +470,7 @@ class Project(Operator):
 
 
 class HashJoin(Operator):
-    """Inner join on equality, by hashing.
+    """Join on equality, by hashing. INNER, LEFT, RIGHT or FULL.
 
     Build: read one input completely and file its rows in a dictionary under
     their join value. Probe: read the other input a row at a time and look its
@@ -482,8 +482,16 @@ class HashJoin(Operator):
     input. A NULL join value matches nothing, not even another NULL, so those
     rows are dropped from both sides.
 
-    Output rows are always (left table's columns..., right table's columns...),
-    whichever side was built.
+    Output rows are always (left columns..., right columns...), whichever side
+    was built. "Left" is the rows joined so far and "right" is the table being
+    added, so a chain of joins is a left-deep tree of these operators.
+
+    Outer joins keep the rows of a side that found no partner, padded with NULLs
+    for the other side's columns. A row whose key is NULL never has a partner but
+    is still kept if its side is preserved. If the preserved side is the probe
+    side, its unmatched rows are emitted as they stream by. If it is the build
+    side, whether a row was matched is only known at the end, so each build row
+    carries a flag and the unmatched ones are emitted after the probe finishes.
     """
 
     def __init__(
@@ -496,9 +504,15 @@ class HashJoin(Operator):
         build_is_left: bool,
         condition: str,
         build_name: str,
+        kind: str = "INNER",
+        left_width: int = 0,
+        right_width: int = 0,
     ) -> None:
         # Children are listed left table first, to match the output column order.
         self.children = (build, probe) if build_is_left else (probe, build)
+        self.kind = kind
+        self.left_width = left_width
+        self.right_width = right_width
         self.build = build
         self.probe = probe
         self.build_key = build_key
@@ -508,6 +522,9 @@ class HashJoin(Operator):
         self.build_name = build_name
 
     def rows(self) -> Iterator[Entry]:
+        if self.kind != "INNER":
+            yield from self._outer_rows()
+            return
         build_key, probe_key, build_is_left = self.build_key, self.probe_key, self.build_is_left
         buckets: dict[Value, list[Row]] = {}
         for _rid, row in self.build.rows():
@@ -523,12 +540,54 @@ class HashJoin(Operator):
             for match in buckets.get(key, ()):
                 yield _NO_RECORD, (match + row) if build_is_left else (row + match)
 
+    def _outer_rows(self) -> Iterator[Entry]:
+        build_is_left = self.build_is_left
+        keep_left = self.kind in ("LEFT", "FULL")
+        keep_right = self.kind in ("RIGHT", "FULL")
+        keep_build = keep_left if build_is_left else keep_right
+        keep_probe = keep_right if build_is_left else keep_left
+        # What stands in for the columns of the side that found no partner.
+        build_nulls: Row = (None,) * (self.left_width if build_is_left else self.right_width)
+        probe_nulls: Row = (None,) * (self.right_width if build_is_left else self.left_width)
+
+        # Each bucket entry is [row, matched]; keyless rows never match anything.
+        buckets: dict[Value, list[list[Any]]] = {}
+        keyless: list[Row] = []
+        for _rid, row in self.build.rows():
+            key = row[self.build_key]
+            if key is None:
+                keyless.append(row)
+            else:
+                buckets.setdefault(key, []).append([row, False])
+
+        for _rid, row in self.probe.rows():
+            key = row[self.probe_key]
+            entries = None if key is None else buckets.get(key)
+            if entries:
+                for entry in entries:
+                    entry[1] = True
+                    match = entry[0]
+                    yield _NO_RECORD, (match + row) if build_is_left else (row + match)
+            elif keep_probe:
+                yield _NO_RECORD, (build_nulls + row) if build_is_left else (row + build_nulls)
+
+        if keep_build:
+            for entries in buckets.values():
+                for match, matched in entries:
+                    if not matched:
+                        padded = match + probe_nulls if build_is_left else probe_nulls + match
+                        yield _NO_RECORD, padded
+            for match in keyless:
+                padded = match + probe_nulls if build_is_left else probe_nulls + match
+                yield _NO_RECORD, padded
+
     def describe(self) -> str:
-        return f"HashJoin({self.condition}; hash table on {self.build_name})"
+        kind = "" if self.kind == "INNER" else f"{self.kind}, "
+        return f"HashJoin({kind}{self.condition}; hash table on {self.build_name})"
 
 
 class IndexJoin(Operator):
-    """Inner join on equality, using an index on one table's join column.
+    """Join on equality, using an index on one table's join column.
 
     For each row of the outer input, look its join value up in the inner
     table's B+ tree and fetch the matching row. Nothing is built in memory and
@@ -540,6 +599,9 @@ class IndexJoin(Operator):
     The inner column is a primary key or UNIQUE column, so each outer row
     matches at most one inner row. Conditions on the inner table alone
     (`inner_predicate`) are checked on the fetched row.
+
+    With keep_outer (a LEFT JOIN whose new table is the inner side), an outer row
+    with no partner is still emitted, padded with NULLs for the inner columns.
     """
 
     def __init__(
@@ -553,8 +615,10 @@ class IndexJoin(Operator):
         outer_is_left: bool,
         condition: str,
         inner_filter_text: str,
+        keep_outer: bool = False,
     ) -> None:
         self.children = (outer,)
+        self.keep_outer = keep_outer
         self.inner = inner
         self.outer_key = outer_key
         self.inner_column = inner_column
@@ -571,27 +635,32 @@ class IndexJoin(Operator):
         heap = inner.heap
         predicate = self.inner_predicate
         outer_key, outer_is_left = self.outer_key, self.outer_is_left
+        keep_outer = self.keep_outer
+        nulls: Row = (None,) * len(types)
         for _rid, row in self.children[0].rows():
             value = row[outer_key]
-            if value is None:
-                continue
-            try:
-                key = encode_key(column_type, value)
-            except KeyTooLargeError:
-                continue  # longer than any key the index can hold, so it matches nothing
-            rid = tree.get(key)
-            if rid is None:
-                continue
-            match = decode_record(types, heap.read(rid))
-            if predicate is not None and predicate(match) is not True:
-                continue
-            yield _NO_RECORD, (row + match) if outer_is_left else (match + row)
+            match: Row | None = None
+            if value is not None:
+                try:
+                    key: bytes | None = encode_key(column_type, value)
+                except KeyTooLargeError:
+                    key = None  # longer than any key the index can hold, so it matches nothing
+                rid = None if key is None else tree.get(key)
+                if rid is not None:
+                    match = decode_record(types, heap.read(rid))
+                    if predicate is not None and predicate(match) is not True:
+                        match = None
+            if match is not None:
+                yield _NO_RECORD, (row + match) if outer_is_left else (match + row)
+            elif keep_outer:
+                yield _NO_RECORD, (row + nulls) if outer_is_left else (nulls + row)
 
     def describe(self) -> str:
         schema = self.inner.schema
         column = schema.columns[self.inner_column].name
         extra = f"; then {self.inner_filter_text}" if self.inner_filter_text else ""
-        return f"IndexJoin({self.condition}; look up {schema.name}.{column}{extra})"
+        kind = "LEFT, " if self.keep_outer else ""
+        return f"IndexJoin({kind}{self.condition}; look up {schema.name}.{column}{extra})"
 
 
 @dataclass(frozen=True, slots=True)

@@ -32,13 +32,14 @@ insert        ::= "INSERT" "INTO" ident [ "(" ident { "," ident } ")" ]
                   "VALUES" row { "," row }
 row           ::= "(" literal { "," literal } ")"
 
-select        ::= "SELECT" select_list "FROM" table_ref [ join ]
+select        ::= "SELECT" select_list "FROM" table_ref { join }
                   [ "WHERE" expr ]
                   [ "GROUP" "BY" ident { "," ident } ]
                   [ "ORDER" "BY" order_item { "," order_item } ]
                   [ "LIMIT" integer ]
 table_ref     ::= ident [ ident ]                       -- table, optional alias
-join          ::= [ "INNER" ] "JOIN" table_ref "ON" column "=" column
+join          ::= [ "INNER" | ( "LEFT" | "RIGHT" | "FULL" ) [ "OUTER" ] ]
+                  "JOIN" table_ref "ON" column "=" column
 column        ::= ident [ "." ident ]                   -- optionally qualified
 select_list   ::= "*" | select_item { "," select_item }
 select_item   ::= ident | distance | aggregate
@@ -95,12 +96,14 @@ In `select`, every place the rules below say `ident` for a column (select items,
 
 **Joins** (details in `12-aggregates-and-joins.md`)
 
-* Two tables, inner join only, on one equality between a column of each.
+* Any number of tables: `FROM a JOIN b ON .. LEFT JOIN c ON ..` is `((a JOIN b) LEFT JOIN c)`. Kinds: inner, `LEFT`, `RIGHT`, `FULL` (`OUTER` is optional).
+* Each `ON` is one equality between a column of the new table and a column of any earlier table.
 * A table may be given an alias; once it has one, its columns are qualified by the alias, not the table name.
 * A bare column name is allowed when only one table has it. A name both have must be qualified.
 * A NULL join value matches nothing.
-* `SELECT *` returns the first table's columns, then the second's, named `alias.column`.
-* `LEFT`, `RIGHT`, `FULL`, `CROSS`, `NATURAL`, `USING`, a third table, and vector distance in a join are not supported.
+* `SELECT *` returns each table's columns in the order the tables are written, named `alias.column`.
+* An outer join keeps the rows of a side that found no partner, with NULL for the other side's columns.
+* `CROSS`, `NATURAL`, `USING`, and vector distance in a join are not supported.
 
 **Aggregates and GROUP BY** (details in `12-aggregates-and-joins.md`)
 
@@ -140,7 +143,7 @@ In `select`, every place the rules below say `ident` for a column (select items,
 
 ## Stretch (not in version 1)
 
-Inner joins (`FROM a JOIN b ON a.x = b.y`), which would add qualified names (`a.x`) to `operand`.
+Joins (`FROM a JOIN b ON a.x = b.y`), which add qualified names (`a.x`) to `operand`.
 
 ## Examples
 

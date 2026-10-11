@@ -84,8 +84,8 @@ class Executor:
 
     def _plan(self, statement: ast.Select) -> tuple[Operator, tuple[str, ...]]:
         table = self._catalog.get(statement.table)
-        right = None if statement.join is None else self._catalog.get(statement.join.table)
-        return plan_select(table, statement, self.vector_settings, right)
+        joined = [self._catalog.get(join.table) for join in statement.joins]
+        return plan_select(table, statement, self.vector_settings, joined)
 
     def select(self, statement: ast.Select) -> Result:
         plan, names = self._plan(statement)

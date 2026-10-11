@@ -355,6 +355,11 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 * **Reason:** The table is the truth and the index is derivable, so a cache that is checked before use gives most of the benefit with no new recovery logic. Validity is a stamp of the heap (newest page LSN, row count, page count) plus the table identity; the file also has a checksum and the graph is structurally validated on load, so a damaged or foreign file is ignored, never trusted. The file is renamed into place for atomicity, and saved on close only, so a crash costs a rebuild and not correctness. Measured once: 25.5 s to rebuild, 0.12 s to load (10,000 rows, 64 dimensions). Drop and create of a table delete its copy; if that transaction rolls back the copy is simply lost.
 * **Date:** 2026-10-12
 
+## D-069 — Joins are a left-deep chain; outer joins keep their written order and push filters conservatively
+* **Alternatives:** Plan all joins as a bushy tree; reorder everything including outer joins using the full set of association rules (what PostgreSQL does); implement only LEFT JOIN and rewrite RIGHT as LEFT; search every order by dynamic programming.
+* **Reason:** A left-deep chain reuses one operator shape (accumulated rows joined with one new table) for any number of tables and any kind. Moving an outer join changes results, so a chain with one keeps the written order. A condition is pushed to a table's scan only if no join can NULL-extend that table, otherwise `WHERE b.x IS NULL` after a LEFT JOIN would silently find nothing; this is the one place a wrong answer is easy, so the null-rejection test (`rejects_null`) answers "no" whenever unsure. All-inner chains are ordered greedily (smallest first, then smallest estimated result); exhaustive search is not justified by estimates that assume uniform, independent data. RIGHT and FULL are real operator kinds, not rewrites, because the hash join handles all four with one code path. Verified against a nested-loop reference over random schemas, kinds and WHERE trees; four deliberately introduced bugs were each caught.
+* **Date:** 2026-10-12
+
 ## D-019 — Optional dependencies only
 * **Alternatives:** Make `typer` a hard dependency.
 * **Reason:** The engine installs with no third-party packages. `typer`, test tools, `matplotlib` and `numpy` are extras.

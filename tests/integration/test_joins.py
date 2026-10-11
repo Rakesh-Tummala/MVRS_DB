@@ -67,11 +67,11 @@ def test_join_aliases_and_qualified_names_parse() -> None:
     )
     assert isinstance(statement, ast.Select)
     assert (statement.table, statement.alias) == ("orders", "o")
-    assert statement.join == ast.Join("customers", "c", "o.customer_id", "c.id")
+    assert statement.joins == (ast.Join("customers", "c", "o.customer_id", "c.id"),)
     assert statement.columns == ("o.id", "c.name", "total")
     assert statement.group_by == ("c.name",)
     assert statement.order_by == (ast.OrderItem("o.id", True),)
-    assert parse("SELECT * FROM a JOIN b ON x = y").join == ast.Join("b", None, "x", "y")  # type: ignore[union-attr]
+    assert parse("SELECT * FROM a JOIN b ON x = y").joins == (ast.Join("b", None, "x", "y"),)  # type: ignore[union-attr]
     assert parse("SELECT SUM(o.total) FROM orders o").columns == (  # type: ignore[union-attr]
         ast.Aggregate("SUM", "o.total"),
     )
@@ -85,9 +85,9 @@ def test_join_aliases_and_qualified_names_parse() -> None:
         ("SELECT * FROM a JOIN b ON a.x < b.y", "one equality"),
         ("SELECT * FROM a JOIN b ON a.x = 5", "expected a column name"),
         ("SELECT * FROM a JOIN b ON a.x = b.y AND a.z = b.w", "put other conditions in WHERE"),
-        ("SELECT * FROM a JOIN b ON a.x = b.y JOIN c ON b.z = c.z", "only two tables"),
         ("SELECT * FROM a INNER b ON a.x = b.y", "expected JOIN"),
-        ("SELECT * FROM a LEFT JOIN b ON a.x = b.y", "LEFT is not supported"),
+        ("SELECT * FROM a LEFT b ON a.x = b.y", "expected JOIN"),
+        ("SELECT * FROM a FULL OUTER b ON a.x = b.y", "expected JOIN"),
         ("SELECT * FROM a CROSS JOIN b", "CROSS is not supported"),
         ("SELECT * FROM a NATURAL JOIN b", "NATURAL is not supported"),
         ("SELECT * FROM a JOIN b USING (x)", "USING is not supported"),

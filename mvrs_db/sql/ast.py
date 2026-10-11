@@ -122,12 +122,17 @@ class OrderItem:
 
 @dataclass(frozen=True, slots=True)
 class Join:
-    """`JOIN table [alias] ON left = right`: an inner join on one equality."""
+    """`[kind] JOIN table [alias] ON left = right`: a join on one equality.
+
+    kind is INNER, LEFT, RIGHT or FULL (LEFT, RIGHT and FULL are the outer joins:
+    they keep the unmatched rows of the left side, the new table, or both).
+    """
 
     table: str
     alias: str | None
     left: str  # the two column names of the ON condition, as written
     right: str
+    kind: str = "INNER"
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +144,7 @@ class Select:
     limit: int | None = None
     group_by: tuple[str, ...] = ()
     alias: str | None = None  # FROM table alias
-    join: Join | None = None
+    joins: tuple[Join, ...] = ()  # applied left to right: ((FROM JOIN a) JOIN b) ...
 
 
 @dataclass(frozen=True, slots=True)

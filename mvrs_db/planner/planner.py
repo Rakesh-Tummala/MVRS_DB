@@ -24,6 +24,7 @@ removes any chance of the range extraction changing a query's meaning.
 from __future__ import annotations
 
 import struct
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 from mvrs_db import config
@@ -52,6 +53,7 @@ from mvrs_db.execution.operators import (
     VectorTopK,
 )
 from mvrs_db.planner import optimizer
+from mvrs_db.planner.joins import join_order, narrow_kinds, null_supplied
 from mvrs_db.planner.scope import (
     Scope,
     Source,
@@ -239,7 +241,7 @@ def plan_select(
     table: Table,
     statement: ast.Select,
     vector_settings: SearchSettings | None = None,
-    right_table: Table | None = None,
+    joined: Sequence[Table] = (),
 ) -> tuple[Operator, tuple[str, ...]]:
     """Build the operator tree for a SELECT and return it with its output column names.
 
@@ -247,10 +249,10 @@ def plan_select(
     query is planned with bare column names and a join with `alias.column`
     names, and neither path has to think about qualifiers again.
     """
-    if statement.join is not None:
-        if right_table is None:
-            raise InternalError("a join was planned without its second table")
-        return _plan_join(table, right_table, statement)
+    if statement.joins:
+        if len(joined) != len(statement.joins):
+            raise InternalError("a join was planned without all of its tables")
+        return _plan_join([table, *joined], statement)
     scope = Scope([Source(statement.alias or table.schema.name, table)])
     names = display_names(statement, table.schema.column_names)
     plan, _plain_names = _plan_single(table, rename_select(statement, scope.plain), vector_settings)
@@ -486,156 +488,282 @@ def _comparable(left: ColumnType, right: ColumnType) -> bool:
     )
 
 
-def _plan_join(
-    left: Table, right: Table, statement: ast.Select
-) -> tuple[Operator, tuple[str, ...]]:
-    """An inner join of two tables on one equality.
+def _plan_join(tables: list[Table], statement: ast.Select) -> tuple[Operator, tuple[str, ...]]:
+    """A chain of joins: ((t0 JOIN t1) JOIN t2) ..., each on one equality.
 
-    1. Resolve names. The joined row is (left columns..., right columns...),
-       described by a combined schema whose columns are named `alias.column`.
+    1. Resolve names. A row of the join is the columns of each table in turn,
+       named `alias.column`.
 
-    2. Push filters down. A WHERE condition that mentions only one table is
-       applied while reading that table, before the join, so fewer rows are
-       joined (and that table's own indexes can be used). Conditions that need
-       both tables are applied to the joined rows.
+    2. Settle the join kinds. A WHERE condition that rejects NULLs on the side an
+       outer join NULL-extends turns it into a weaker join (see joins.py).
 
-    3. Choose the join method by estimated cost:
-         hash join       read both inputs once, build a hash table on the
-                         smaller one;
-         index join      for each row of one input, look up the other table's
-                         index. Possible when the join column on that side is
-                         a primary key or UNIQUE column of the same type.
-       The index join wins when its outer input is small; the hash join wins
-       when both inputs are large.
+    3. Push filters down. A condition on one table is applied while reading that
+       table, unless the joins could NULL-extend that table, in which case it must
+       wait until after them. A condition on several tables is applied as soon as
+       every table it mentions has been joined, unless a later RIGHT or FULL join
+       would NULL-extend them afterwards.
 
-    4. Aggregates, ORDER BY, LIMIT and the select list are then applied to the
-       joined rows by the same operators a one-table query uses.
+    4. Choose the order and the methods. A chain of inner joins is ordered
+       greedily, smallest table first. A chain with an outer join keeps the order
+       written, because moving an outer join changes the result. For each step
+       the hash join and, where a table has an index on its join column, the
+       index join are compared by estimated cost.
+
+    5. Aggregates, ORDER BY, LIMIT and the select list are applied to the joined
+       rows by the same operators a one-table query uses.
     """
-    join = statement.join
-    assert join is not None
+    joins = statement.joins
+    count = len(tables)
     scope = Scope(
         [
-            Source(statement.alias or left.schema.name, left),
-            Source(join.alias or right.schema.name, right),
+            Source(statement.alias or tables[0].schema.name, tables[0]),
+            *(
+                Source(join.alias or tables[k + 1].schema.name, tables[k + 1])
+                for k, join in enumerate(joins)
+            ),
         ]
     )
-    tables = (left, right)
     aliases = [source.alias for source in scope.sources]
-    combined = TableSchema(
-        0,
-        f"{aliases[0]} JOIN {aliases[1]}",
-        0,
-        tuple(
-            replace(
-                column,
-                name=f"{alias}.{column.name}",
-                index_root=0,
-                primary_key=False,
-                unique=False,
-                ann="",
-            )
-            for alias, table in zip(aliases, tables, strict=True)
-            for column in table.schema.columns
-        ),
-    )
-    names = display_names(statement, combined.column_names)
 
-    # --- the ON condition: one column from each table
-    (first_side, first_position) = scope.resolve(join.left)
-    (second_side, second_position) = scope.resolve(join.right)
-    if first_side == second_side:
-        raise SqlError(
-            f"the join condition must compare a column of {aliases[0]} "
-            f"with a column of {aliases[1]}"
+    def schema_of(layout: Sequence[int]) -> TableSchema:
+        """The row layout of these tables joined in this order."""
+        return TableSchema(
+            0,
+            " JOIN ".join(aliases[t] for t in layout),
+            0,
+            tuple(
+                replace(
+                    column,
+                    name=f"{aliases[t]}.{column.name}",
+                    index_root=0,
+                    primary_key=False,
+                    unique=False,
+                    ann="",
+                )
+                for t in layout
+                for column in tables[t].schema.columns
+            ),
         )
-    key = [0, 0]
-    key[first_side], key[second_side] = first_position, second_position
-    key_types = [tables[side].schema.columns[key[side]].type for side in (0, 1)]
-    if not _comparable(key_types[0], key_types[1]):
-        raise TypeMismatchError(
-            f"cannot join {scope.qualified(join.left)} ({key_types[first_side].name}) with "
-            f"{scope.qualified(join.right)} ({key_types[second_side].name})"
-        )
-    left_name, right_name = (join.left, join.right) if first_side == 0 else (join.right, join.left)
-    condition = f"{scope.qualified(left_name)} = {scope.qualified(right_name)}"
 
-    # --- split WHERE into per-table filters and filters on the joined row
-    per_side: list[list[ast.Expr]] = [[], []]
-    on_joined: list[ast.Expr] = []
-    for conjunct in expressions.conjuncts(statement.where):
-        sides = {scope.resolve(name)[0] for name in columns_in(conjunct)}
-        if len(sides) == 1:
-            per_side[sides.pop()].append(rename_expr(conjunct, scope.plain))
+    names = display_names(statement, schema_of(range(count)).column_names)
+
+    # --- the ON conditions. Join k adds table k+1 and compares one of its columns
+    # with a column of an earlier table: links[k] = (earlier, its column, new column).
+    links: list[tuple[int, int, int]] = []
+    for k, join in enumerate(joins):
+        new = k + 1
+        side_a, position_a = scope.resolve(join.left)
+        side_b, position_b = scope.resolve(join.right)
+        if side_b == new and side_a < new:
+            old, old_position, new_position = side_a, position_a, position_b
+        elif side_a == new and side_b < new:
+            old, old_position, new_position = side_b, position_b, position_a
         else:
-            on_joined.append(rename_expr(conjunct, scope.qualified))
-    side_where = [_all_of(per_side[0]), _all_of(per_side[1])]
-    inputs = [plan_access(tables[side], side_where[side])[0] for side in (0, 1)]
-    rows = [max(inputs[side].est_rows, 0.0) for side in (0, 1)]
-    totals = [float(max(tables[side].ensure_stats()[0], 1)) for side in (0, 1)]
-    unique = [key[side] in tables[side].indexes for side in (0, 1)]
+            raise SqlError(
+                f"the join condition must compare a column of {' or '.join(aliases[:new])} "
+                f"with a column of {aliases[new]}"
+            )
+        type_old = tables[old].schema.columns[old_position].type
+        type_new = tables[new].schema.columns[new_position].type
+        if not _comparable(type_old, type_new):
+            types = (type_old, type_new) if side_a == old else (type_new, type_old)
+            raise TypeMismatchError(
+                f"cannot join {scope.qualified(join.left)} ({types[0].name}) with "
+                f"{scope.qualified(join.right)} ({types[1].name})"
+            )
+        links.append((old, old_position, new_position))
+    pairs = [(old, k + 1) for k, (old, _a, _b) in enumerate(links)]
 
-    # Each row of one input matches rows of the other that share its key. If
-    # the other side's key is unique there is at most one such row.
-    if unique[1]:
-        joined_rows = rows[0] * rows[1] / totals[1]
-    elif unique[0]:
-        joined_rows = rows[0] * rows[1] / totals[0]
-    else:
-        joined_rows = min(rows)
+    def link_between(chosen: Sequence[int], t: int) -> tuple[int, int, int]:
+        """(chosen table, its column, t's column) for the one ON condition joining t to them."""
+        for k, (old, old_position, new_position) in enumerate(links):
+            if k + 1 == t and old in chosen:
+                return old, old_position, new_position
+            if old == t and (k + 1) in chosen:
+                return k + 1, new_position, old_position
+        raise InternalError(f"table {aliases[t]} is not connected to the tables joined before it")
 
-    build = 0 if rows[0] <= rows[1] else 1
-    best: Operator = HashJoin(
-        inputs[build],
-        inputs[1 - build],
-        key[build],
-        key[1 - build],
-        build_is_left=build == 0,
-        condition=condition,
-        build_name=aliases[build],
+    # --- classify the WHERE conditions
+    conjuncts = expressions.conjuncts(statement.where)
+    used_by = [frozenset(scope.resolve(name)[0] for name in columns_in(c)) for c in conjuncts]
+    kinds = narrow_kinds(
+        [join.kind for join in joins], conjuncts, lambda name: scope.resolve(name)[0]
     )
-    best.cost = inputs[0].cost + inputs[1].cost + optimizer.hash_join_cost(rows[0], rows[1])
+    nullable = null_supplied(kinds)
+    per_table: list[list[ast.Expr]] = [[] for _ in range(count)]
+    pending: list[tuple[frozenset[int], ast.Expr]] = []
+    for conjunct, used in zip(conjuncts, used_by, strict=True):
+        if len(used) == 1 and not nullable[next(iter(used))]:
+            per_table[next(iter(used))].append(rename_expr(conjunct, scope.plain))
+        else:
+            pending.append((used, rename_expr(conjunct, scope.qualified)))
+    side_where = [_all_of(per_table[t]) for t in range(count)]
+    scans = [plan_access(tables[t], side_where[t])[0] for t in range(count)]
+    rows = [max(scan.est_rows, 0.0) for scan in scans]
+    totals = [float(max(table.ensure_stats()[0], 1)) for table in tables]
 
-    for inner in (0, 1):
-        outer = 1 - inner
-        if not unique[inner] or key_types[0] is not key_types[1]:
-            continue
-        cost = inputs[outer].cost + optimizer.index_join_cost(
-            rows[outer], tables[inner].indexes[key[inner]].height()
+    def unique(t: int, position: int) -> bool:
+        return position in tables[t].indexes
+
+    def joined_estimate(
+        acc_rows: float, base: int | None, old: int, old_position: int, new: int, new_position: int
+    ) -> float:
+        """Rows from joining the accumulated rows with table `new`.
+
+        Each row of one side matches the rows of the other with its key. If the
+        other side's key is unique there is at most one, so the result is the
+        product of the sizes divided by that table's size. `base` is the table
+        the accumulated rows are, if they are still just one table.
+        """
+        if unique(new, new_position):
+            return acc_rows * rows[new] / totals[new]
+        if base is not None and unique(old, old_position):
+            return acc_rows * rows[new] / totals[old]
+        return min(acc_rows, rows[new])
+
+    if count > 2 and all(kind == "INNER" for kind in kinds):
+
+        def estimate(acc_rows: float, chosen: Sequence[int], t: int) -> float:
+            old, old_position, new_position = link_between(chosen, t)
+            base = chosen[0] if len(chosen) == 1 else None
+            return joined_estimate(acc_rows, base, old, old_position, t, new_position)
+
+        order = join_order(rows, pairs, estimate)
+    else:
+        order = list(range(count))
+
+    layout: list[int] = [order[0]]
+    plan: Operator = scans[order[0]]
+    base: int | None = order[0]
+
+    def apply_ready(remaining_kinds: Sequence[str]) -> None:
+        """Apply every pending condition whose tables have all been joined."""
+        nonlocal plan, base
+        if any(kind in ("RIGHT", "FULL") for kind in remaining_kinds):
+            return
+        schema = schema_of(layout)
+        for item in [item for item in pending if item[0] <= set(layout)]:
+            pending.remove(item)
+            expressions.check(item[1], schema)
+            child = plan
+            plan = Filter(
+                child,
+                expressions.compile_predicate(item[1], schema),
+                expressions.format_expr(item[1]),
+            )
+            plan.cost = child.cost
+            # No statistics relate columns of different tables, so this is a flat guess.
+            plan.est_rows = child.est_rows * optimizer.DEFAULT_RANGE
+            base = None
+
+    def column_name(t: int, position: int) -> str:
+        return f"{aliases[t]}.{tables[t].schema.columns[position].name}"
+
+    def add_table(new: int, old: int, old_position: int, new_position: int, kind: str) -> None:
+        nonlocal plan, base
+        acc_rows = plan.est_rows
+        offset = sum(len(tables[t].schema.columns) for t in layout[: layout.index(old)])
+        acc_key = offset + old_position
+        left_width = sum(len(tables[t].schema.columns) for t in layout)
+        right_width = len(tables[new].schema.columns)
+        condition = f"{column_name(old, old_position)} = {column_name(new, new_position)}"
+        same_type = (
+            tables[old].schema.columns[old_position].type
+            is tables[new].schema.columns[new_position].type
         )
-        if cost >= best.cost:
-            continue
-        inner_where = side_where[inner]
-        predicate = (
-            None
-            if inner_where is None
-            else expressions.compile_predicate(inner_where, tables[inner].schema)
-        )
-        best = IndexJoin(
-            inputs[outer],
-            tables[inner],
-            key[outer],
-            key[inner],
-            predicate,
-            outer_is_left=outer == 0,
+
+        estimate_rows = joined_estimate(acc_rows, base, old, old_position, new, new_position)
+        if kind in ("LEFT", "FULL"):
+            estimate_rows = max(estimate_rows, acc_rows)
+        if kind in ("RIGHT", "FULL"):
+            estimate_rows = max(estimate_rows, rows[new])
+
+        build_acc = acc_rows <= rows[new]
+        built_name = " JOIN ".join(aliases[t] for t in layout) if build_acc else aliases[new]
+        if build_acc:
+            build_op, probe_op, build_key, probe_key = plan, scans[new], acc_key, new_position
+        else:
+            build_op, probe_op, build_key, probe_key = scans[new], plan, new_position, acc_key
+        best: Operator = HashJoin(
+            build_op,
+            probe_op,
+            build_key,
+            probe_key,
+            build_is_left=build_acc,
             condition=condition,
-            inner_filter_text="" if inner_where is None else expressions.format_expr(inner_where),
+            build_name=built_name,
+            kind=kind,
+            left_width=left_width,
+            right_width=right_width,
         )
-        best.cost = cost
-    best.est_rows = joined_rows
-    plan = best
+        best.cost = plan.cost + scans[new].cost + optimizer.hash_join_cost(acc_rows, rows[new])
 
-    joined_where = _all_of(on_joined)
-    if joined_where is not None:
-        expressions.check(joined_where, combined)
-        child = plan
-        plan = Filter(
-            child,
-            expressions.compile_predicate(joined_where, combined),
-            expressions.format_expr(joined_where),
+        # The earlier table as the looked-up side: only while the accumulated
+        # rows are still that one table, so its scan can be replaced by lookups.
+        if base is not None and unique(old, old_position) and same_type and kind == "INNER":
+            cost = scans[new].cost + optimizer.index_join_cost(
+                rows[new], tables[old].indexes[old_position].height()
+            )
+            if cost < best.cost:
+                inner_where = side_where[old]
+                best = IndexJoin(
+                    scans[new],
+                    tables[old],
+                    new_position,
+                    old_position,
+                    None
+                    if inner_where is None
+                    else expressions.compile_predicate(inner_where, tables[old].schema),
+                    outer_is_left=False,
+                    condition=condition,
+                    inner_filter_text=""
+                    if inner_where is None
+                    else expressions.format_expr(inner_where),
+                )
+                best.cost = cost
+        # The new table as the looked-up side.
+        if unique(new, new_position) and same_type and kind in ("INNER", "LEFT"):
+            cost = plan.cost + optimizer.index_join_cost(
+                acc_rows, tables[new].indexes[new_position].height()
+            )
+            if cost < best.cost:
+                inner_where = side_where[new]
+                best = IndexJoin(
+                    plan,
+                    tables[new],
+                    acc_key,
+                    new_position,
+                    None
+                    if inner_where is None
+                    else expressions.compile_predicate(inner_where, tables[new].schema),
+                    outer_is_left=True,
+                    condition=condition,
+                    inner_filter_text=""
+                    if inner_where is None
+                    else expressions.format_expr(inner_where),
+                    keep_outer=kind == "LEFT",
+                )
+                best.cost = cost
+        best.est_rows = estimate_rows
+        plan = best
+        layout.append(new)
+        base = None
+
+    reordered = order != sorted(order)
+    apply_ready([] if reordered else kinds)
+    for new in order[1:]:
+        if reordered:
+            old, old_position, new_position = link_between(layout, new)
+        else:
+            old, old_position, new_position = links[new - 1]
+        add_table(
+            new, old, old_position, new_position, kinds[new - 1] if not reordered else "INNER"
         )
-        plan.cost = child.cost
-        # No statistics relate columns of different tables, so this is a flat guess.
-        plan.est_rows = child.est_rows * optimizer.DEFAULT_RANGE
+        apply_ready([] if reordered else kinds[new:])
+
+    if pending:
+        raise InternalError("a WHERE condition was never applied")
+    combined = schema_of(layout)
 
     canonical = replace(rename_select(statement, scope.qualified), where=None)
     if _is_aggregate_query(canonical):
@@ -643,18 +771,24 @@ def _plan_join(
         return plan, names
 
     items: list[int | DistanceSpec] = []
-    for item in canonical.columns or combined.column_names:
-        if isinstance(item, ast.Distance):
-            raise SqlError("a vector distance cannot be used in a join query")
-        items.append(expressions.column_position(combined, str(item)))
+    if canonical.columns is None:
+        # SELECT * lists the tables in the order written, whatever order they were joined in.
+        for t in range(count):
+            for position in range(len(tables[t].schema.columns)):
+                items.append(expressions.column_position(combined, column_name(t, position)))
+    else:
+        for item in canonical.columns:
+            if isinstance(item, ast.Distance):
+                raise SqlError("a vector distance cannot be used in a join query")
+            items.append(expressions.column_position(combined, str(item)))
     keys: list[SortKey] = []
-    for order in canonical.order_by:
-        if isinstance(order.column, ast.Distance):
+    for order_item in canonical.order_by:
+        if isinstance(order_item.column, ast.Distance):
             raise SqlError("a vector distance cannot be used in a join query")
-        position = expressions.column_position(combined, str(order.column))
+        position = expressions.column_position(combined, str(order_item.column))
         if combined.columns[position].type is ColumnType.VECTOR:
-            raise TypeMismatchError(f"cannot ORDER BY {order.column}: vectors have no order")
-        keys.append((position, order.descending))
+            raise TypeMismatchError(f"cannot ORDER BY {order_item.column}: vectors have no order")
+        keys.append((position, order_item.descending))
 
     limit = statement.limit
     if keys:

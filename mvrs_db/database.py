@@ -379,13 +379,12 @@ class Database:
     def _lock_for_reading(self, txn: Transaction, statement: ast.Select) -> None:
         """Shared locks on every table a SELECT reads.
 
-        A join locks both tables, in name order. Taking locks in one fixed
+        A join locks every table it names, in name order. Taking locks in one fixed
         order means two joins of the same tables can never each hold one lock
         while waiting for the other.
         """
         tables = {statement.table}
-        if statement.join is not None:
-            tables.add(statement.join.table)
+        tables.update(join.table for join in statement.joins)
         for name in sorted(tables):
             self._locks.acquire(txn.txn_id, _table_lock(name), SHARED)
 

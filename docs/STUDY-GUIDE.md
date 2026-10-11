@@ -36,7 +36,7 @@ Run the tests with:
 | 12 | Planner and optimiser | `planner/optimizer.py` docstring | `planner/planner.py`, `planner/optimizer.py` | `integration/test_planner.py` |
 | 13 | Transactions and locks | `10-transactions.md` | `database.py`, `transactions/lock_manager.py` | `test_transactions.py`, `concurrency/` |
 | 14 | Aggregates | `12-aggregates-and-joins.md` | `HashAggregate`, `MetadataAggregate` in `execution/operators.py`; `_plan_aggregate` in `planner/planner.py` | `integration/test_aggregates.py` |
-| 15 | Joins | `12-aggregates-and-joins.md` | `planner/scope.py`; `_plan_join` in `planner/planner.py`; `HashJoin`, `IndexJoin` in `execution/operators.py` | `integration/test_joins.py` |
+| 15 | Joins | `12-aggregates-and-joins.md` | `planner/scope.py`, `planner/joins.py`; `_plan_join` in `planner/planner.py`; `HashJoin`, `IndexJoin` in `execution/operators.py` | `integration/test_joins.py`, `test_outer_joins.py` |
 | 16 | Vector search | `11-vector-search.md` | `vector/distance.py`, `vector/hnsw.py`, `vector/snapshot.py`, `catalog/ann_store.py`; `VectorTopK`, `VectorIndexScan` in `execution/operators.py` | `integration/test_vectors.py`, `test_vector_search.py`, `test_vector_index.py`, `test_vector_snapshot.py` |
 | 19 | In-place B+ tree edits | `09-btree.md` (sections "Operations" and "Why in place") | `index/btree_node.py` (`leaf_insert`, `leaf_delete`, `internal_insert`, `validate`); `_insert` in `index/btree.py` | `unit/test_btree_node.py`, `unit/test_btree.py`, `benchmarks/btree_ops.py` |
 | 18 | Group commit | `05-wal-and-recovery.md` (sections "Commit, step by step", "Write ordering") | `recovery/wal.py` (`flush_through`, `atomic_append`); `_finish`, `_log_and_commit`, `_make_log_durable` in `database.py`; `commit(durable_after)` in `storage/buffer_pool.py` | `concurrency/test_group_commit.py`, `crash_recovery/test_crash_concurrent.py`, `benchmarks/group_commit.py` |
@@ -124,6 +124,14 @@ Topics 14 to 19 were added after the first thirteen. Each of their design docs e
 * Why can `ORDER BY id LIMIT 10` skip the sort?
 * Why is that shortcut not used for a nullable `UNIQUE` column?
 
+### Outer joins and join chains
+* What does each of LEFT, RIGHT and FULL keep that INNER drops? What does a NULL join key do in each?
+* Why can `WHERE b.x IS NULL` after `a LEFT JOIN b` not be pushed below the join?
+* Why does `LEFT JOIN b ... WHERE b.x = 1` become an inner join, and why must `rejects_null` answer "no" when unsure?
+* For a RIGHT or FULL hash join, how are the preserved rows that never matched found?
+* Why is a chain with an outer join not reordered, and how is an all-inner chain ordered?
+* How was the join code tested against a reference, and which deliberate bugs did that catch?
+
 ### Transactions
 * What does strict two-phase locking guarantee? Why "strict"?
 * Show a deadlock with two transactions and one table. How is it detected?
@@ -138,6 +146,8 @@ Topics 14 to 19 were added after the first thirteen. Each of their design docs e
 * If you had another month, what would you build first, and why?
 
 ## Good experiments
+
+* In `rejects_null`, make `IS NULL` count as null-rejecting, then run `test_outer_joins.py` and read the failing query.
 
 * Make `AnnStore.load` skip the stamp comparison and run `test_vector_snapshot.py`; two tests fail, which shows what the stamp is for.
 

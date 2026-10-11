@@ -100,7 +100,7 @@ MetadataAggregate(sales: min(id) from index edge; count(*) from heap page slot c
 
 ## Joins
 
-Code: `mvrs_db/planner/scope.py` (name resolution), `_plan_join` in `mvrs_db/planner/planner.py`, `HashJoin` and `IndexJoin` in `mvrs_db/execution/operators.py`. Tests: `tests/integration/test_joins.py`. Measurement: `benchmarks/join_methods.py`.
+Code: `mvrs_db/planner/scope.py` (name resolution), `mvrs_db/planner/joins.py` (outer-join rules and join order), `_plan_join` in `mvrs_db/planner/planner.py`, `HashJoin` and `IndexJoin` in `mvrs_db/execution/operators.py`. Tests: `tests/integration/test_joins.py`, `test_outer_joins.py`. Measurement: `benchmarks/join_methods.py`.
 
 ### What they are for
 
@@ -116,28 +116,40 @@ LIMIT 5;
 
 This is an **inner** join: a row appears only if it has a partner. An order whose `customer_id` is NULL, or points at no customer, is left out; so is a customer with no orders.
 
+An **outer** join keeps the unmatched rows of one or both sides and fills the other side's columns with NULL:
+
+| Join | Keeps unmatched rows of |
+|---|---|
+| `a LEFT JOIN b` | `a` |
+| `a RIGHT JOIN b` | `b` |
+| `a FULL JOIN b` | both |
+
+`SELECT c.name, COUNT(o.id) FROM customers c LEFT JOIN orders o ON o.customer_id = c.id GROUP BY c.name` lists customers with no orders, with a count of 0. The inner version would drop them.
+
 ### What is supported
 
-* Exactly two tables, joined with `JOIN` or `INNER JOIN`.
-* An `ON` condition that is one equality between a column of each table.
+* Any number of tables, joined left to right: `a JOIN b ON .. JOIN c ON ..` means `((a JOIN b) JOIN c)`. Kinds are `[INNER] JOIN`, `LEFT [OUTER] JOIN`, `RIGHT [OUTER] JOIN` and `FULL [OUTER] JOIN`, and they may be mixed.
+* Each `ON` condition is one equality between a column of the new table and a column of any earlier table (not necessarily the one just before).
 * Table aliases (`orders o`) and qualified names (`o.total`, or `orders.total` when there is no alias).
 * A bare column name, when only one of the tables has a column of that name. A name both tables have (`id`) must be qualified; the error says how.
 * `WHERE`, aggregates, `GROUP BY`, `ORDER BY` and `LIMIT`, all applied to the joined rows.
 * A table joined to itself, with two aliases.
 
-`SELECT *` returns every column of the first table, then every column of the second, named `alias.column`. Otherwise result columns are named as the query wrote them.
+`SELECT *` returns every column of each table in the order the tables are written, named `alias.column`, however the planner ordered the joins. Otherwise result columns are named as the query wrote them.
 
 Qualified names and aliases also work in a query on one table.
 
 ### NULL never matches
 
-`NULL = NULL` is not true in SQL, so a NULL join value pairs with nothing, including another NULL. Both join operators drop such rows before comparing.
+`NULL = NULL` is not true in SQL, so a NULL join value pairs with nothing, including another NULL. Both join operators drop such rows before comparing. An outer join still keeps such a row if its side is preserved, padded with NULLs.
 
-### Three steps of planning
+### Steps of planning
 
 **1. Resolve names.** `scope.py` works out which table each column name refers to and rewrites every name into one form: `alias.column` for a join, the bare column name for a single table. Errors that depend on the whole query are caught here: an unknown qualifier, a column neither table has, an ambiguous bare name. After this step the rest of the planner never looks at a qualifier.
 
-The joined row is the first table's columns followed by the second's. The planner describes it with a combined schema, and from then on the existing filter, sort, aggregate and projection code treats a join exactly like a table.
+The joined row is each table's columns in the order the tables were joined. The planner describes it with a combined schema, and from then on the existing filter, sort, aggregate and projection code treats a join exactly like a table.
+
+A chain is planned **left-deep**: each step joins "everything so far" (the left input) with one new table (the right input). The tree of operators has that shape, and a join key is always (a column somewhere in the accumulated row) = (a column of the new table).
 
 **2. Push filters down.** `WHERE` is split at its top-level `AND`s. A condition that mentions only one table is applied while that table is read, *below* the join. A condition that needs both (`o.city = c.city`) is applied to the joined rows, above it.
 
@@ -152,7 +164,11 @@ Project(name)
 
 This matters twice over: fewer rows reach the join, and each table's own index can be used for its condition. Filtering after the join would give the same answer and do far more work.
 
-Pushing down is only safe because this is an inner join. For an outer join, moving a condition below the join can change the result.
+**Outer joins make this unsafe, and that is where the care goes.** In `a LEFT JOIN b ... WHERE b.x IS NULL`, the rows with `b.x` NULL are the ones the join added. A filter pushed below the join would run on `b` before those rows exist, and the query would find nothing. So a condition is pushed to a table's scan only if no join can NULL-extend that table: not its own join (`LEFT`, `FULL`), and not a later `RIGHT` or `FULL`, which NULL-extends everything joined so far. Otherwise the condition waits and is applied to the joined rows. A multi-table condition is applied as soon as all its tables are present, again unless a later `RIGHT` or `FULL` would still NULL-extend them.
+
+**Weakening an outer join.** If `WHERE` can never be true for the rows an outer join added, those rows would be removed anyway, so the join may become a cheaper kind. `LEFT JOIN b ... WHERE b.x = 1` is an inner join in disguise: every row with `b` NULL fails the comparison. The planner rewrites `LEFT` to `INNER`, `RIGHT` to `INNER`, and `FULL` to `LEFT`, `RIGHT` or `INNER` depending on which side is filtered. Then the condition can be pushed down and the planner may reorder. The test for "never true when these columns are NULL" (`rejects_null` in `joins.py`) is deliberately conservative: it says yes for comparisons and `IS NOT NULL`, handles `AND`/`OR`, and says no for `IS NULL` and `NOT`, because a wrong yes silently drops rows.
+
+**Join order.** Changing the order of an inner chain never changes its rows, so the planner picks one: the smallest (after its own filter) table first, then repeatedly the connected table that gives the smallest estimated result. This is greedy and can miss the best order; trying every order (dynamic programming over subsets) is more machinery than these row estimates can justify. A chain containing an outer join keeps the order written, because moving an outer join changes the result. In both cases `SELECT *` still lists the tables in the order written.
 
 **3. Choose the join method.**
 
@@ -161,7 +177,8 @@ Pushing down is only safe because this is an inner join. For an outer join, movi
 | How | Read one input fully into a dictionary keyed by the join value; read the other and look each row up | For each row of one input, look the join value up in the other table's B+ tree and fetch the row |
 | Cost | About rows(A) + rows(B) | About rows(outer) × (a tree descent + a row fetch) |
 | Memory | The smaller input, held in a dictionary | None |
-| Needs | Nothing | The inner join column is a primary key or `UNIQUE` column of the same type |
+| Needs | Nothing | The looked-up column is a primary key or `UNIQUE` column of the same type |
+| Outer joins | All three kinds | `LEFT` when the new table is looked up (an outer row with no partner is still emitted); inner joins either way |
 | Wins when | Both inputs are large | The outer input is small |
 
 Both are far better than the naive method, comparing every pair, which costs rows(A) × rows(B).
@@ -188,17 +205,22 @@ On very small tables the hash join is chosen even when an index exists, and that
 
 The planner needs this estimate for the operators above the join. If the join column is unique on one side, each row of the other side matches at most one row, so the estimate is rows(A) × rows(B) ÷ rows in the unique table. With no unique side there are no statistics to go on and the estimate is the smaller input's row count, which can be badly wrong.
 
+For an outer hash join, each build row carries a "matched" flag. If the preserved side is the probe side, its unmatched rows are emitted as they stream past; if it is the build side, they can only be known at the end and are emitted after the probe finishes. Rows with a NULL key are kept aside because they never match but must still be emitted.
+
+### How it is tested
+
+`test_outer_joins.py` compares the engine with a plain nested-loop evaluation written separately in the test (random tables of 0 to 12 rows with NULLs and duplicates, random kinds, random `ON` columns including indexed ones, and random `WHERE` trees with `AND`/`OR`/`NOT`/`IS NULL`), for two, three and four tables, with and without outer joins. Deliberately breaking four things (treating `IS NULL` as null-rejecting, dropping NULL-keyed build rows, ignoring that `RIGHT` NULL-extends earlier tables, and not holding conditions back) each made it fail. A separate test checks that every outer operator is chosen by the planner for some query of the kind the comparison runs.
+
 ### Locking
 
-A join takes a shared lock on both tables, in name order. A fixed order means two joins over the same pair of tables can never each hold one lock while waiting for the other.
+A join takes a shared lock on every table it names, in name order. A fixed order means two joins over the same pair of tables can never each hold one lock while waiting for the other.
 
 ### Not built
 
-* Outer joins (`LEFT`, `RIGHT`, `FULL`), `CROSS JOIN`, `NATURAL`, `USING`
-* More than two tables
+* `CROSS JOIN`, `NATURAL`, `USING`
+* Reordering a chain that contains an outer join, and an exhaustive search for the best order
 * Join conditions other than one equality (`ON a.x = b.x AND a.y = b.y`, `ON a.x < b.y`). Extra conditions go in `WHERE`, where they give the same result for an inner join.
 * Merge join, and any join that spills to disk when the hash table does not fit in memory
-* Join-order optimisation, which only matters with three or more tables
 * Vector distance in a join query
 * Column aliases (`AS`)
 
@@ -211,4 +233,6 @@ A join takes a shared lock on both tables, in name order. A fixed order means tw
 * Why the hash table is built on the smaller input.
 * How name resolution finds an ambiguous column, and why that cannot be done while parsing.
 * What a merge join is and when it would be the best choice (both inputs already sorted on the key).
-* Why join order matters with three tables.
+* Why join order matters with three tables, and why an outer join pins it.
+* Why a filter on the NULL-supplied side of a LEFT JOIN cannot be pushed below it, and when it can be turned into an inner join.
+* How a RIGHT or FULL hash join finds the preserved rows it never matched.

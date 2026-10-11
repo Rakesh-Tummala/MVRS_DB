@@ -237,7 +237,9 @@ class _Parser:
             columns = tuple(items)
         self._expect_keyword("FROM")
         table, alias = self._table_and_alias()
-        join = self._join()
+        joins: list[ast.Join] = []
+        while (join := self._join()) is not None:
+            joins.append(join)
         where = self._where()
         group_by: list[str] = []
         if self._accept_keyword("GROUP"):
@@ -261,7 +263,7 @@ class _Parser:
             if limit > _INT64_MAX:
                 raise SqlSyntaxError("LIMIT is too large")
         return ast.Select(
-            table, columns, where, tuple(order_by), limit, tuple(group_by), alias, join
+            table, columns, where, tuple(order_by), limit, tuple(group_by), alias, tuple(joins)
         )
 
     def _table_and_alias(self) -> tuple[str, str | None]:
@@ -272,8 +274,13 @@ class _Parser:
         return table, None
 
     def _join(self) -> ast.Join | None:
-        """[INNER] JOIN table [alias] ON column = column."""
+        """[INNER | LEFT | RIGHT | FULL [OUTER]] JOIN table [alias] ON column = column."""
+        kind = "INNER"
         if self._accept_keyword("INNER"):
+            self._expect_keyword("JOIN")
+        elif self._is_keyword("LEFT", "RIGHT", "FULL"):
+            kind = self._advance().value
+            self._accept_keyword("OUTER")
             self._expect_keyword("JOIN")
         elif not self._accept_keyword("JOIN"):
             return None
@@ -286,15 +293,12 @@ class _Parser:
                 f"a join condition must be one equality, column = column, at {where}"
             )
         right = self._column_name("a column name")
-        if self._is_keyword("JOIN", "INNER", "AND", "OR"):
+        if self._is_keyword("AND", "OR"):
             where = describe_position(self._text, self._current.position)
-            what = (
-                "only two tables can be joined"
-                if self._is_keyword("JOIN", "INNER")
-                else "a join condition must be one equality; put other conditions in WHERE"
+            raise SqlSyntaxError(
+                f"a join condition must be one equality; put other conditions in WHERE, at {where}"
             )
-            raise SqlSyntaxError(f"{what}, at {where}")
-        return ast.Join(table, alias, left, right)
+        return ast.Join(table, alias, left, right, kind)
 
     def _column_name(self, what: str) -> str:
         """A column name, optionally qualified by a table or alias: `price` or `o.price`."""

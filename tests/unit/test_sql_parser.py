@@ -242,7 +242,7 @@ def test_syntax_errors(text: str, message: str) -> None:
 @pytest.mark.parametrize(
     ("text", "word"),
     [
-        ("SELECT * FROM a LEFT JOIN b ON a.x = b.y", "LEFT"),
+        ("SELECT * FROM a NATURAL JOIN b", "NATURAL"),
         ("SELECT DISTINCT a FROM t", "DISTINCT"),
         ("SELECT COUNT(DISTINCT a) FROM t", "DISTINCT"),
         ("SELECT a FROM t GROUP BY a HAVING a > 1", "HAVING"),
