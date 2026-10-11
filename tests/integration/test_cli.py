@@ -10,14 +10,14 @@ import pytest
 
 typer_testing = pytest.importorskip("typer.testing")
 
-from kestreldb.cli import app, format_result, split_statements  # noqa: E402
-from kestreldb.execution.executor import Result  # noqa: E402
+from mvrs_db.cli import app, format_result, split_statements  # noqa: E402
+from mvrs_db.execution.executor import Result  # noqa: E402
 
 runner = typer_testing.CliRunner()
 
 
 def test_exec_creates_a_database_and_prints_tables(tmp_path: Path) -> None:
-    path = tmp_path / "cli.kdb"
+    path = tmp_path / "cli.mvrs"
 
     result = runner.invoke(
         app,
@@ -39,14 +39,14 @@ def test_exec_creates_a_database_and_prints_tables(tmp_path: Path) -> None:
 
 
 def test_exec_reports_errors_with_a_nonzero_exit_code(tmp_path: Path) -> None:
-    result = runner.invoke(app, ["exec", str(tmp_path / "cli.kdb"), "SELECT * FROM missing"])
+    result = runner.invoke(app, ["exec", str(tmp_path / "cli.mvrs"), "SELECT * FROM missing"])
 
     assert result.exit_code == 1
     assert "no such table: missing" in result.output
 
 
 def test_explain_is_printed_as_a_tree(tmp_path: Path) -> None:
-    path = tmp_path / "cli.kdb"
+    path = tmp_path / "cli.mvrs"
     runner.invoke(app, ["exec", str(path), "CREATE TABLE t (id INTEGER PRIMARY KEY)"])
 
     result = runner.invoke(app, ["exec", str(path), "EXPLAIN SELECT * FROM t WHERE id = 1"])
@@ -57,7 +57,7 @@ def test_explain_is_printed_as_a_tree(tmp_path: Path) -> None:
 
 
 def test_info_and_check(tmp_path: Path) -> None:
-    path = tmp_path / "cli.kdb"
+    path = tmp_path / "cli.mvrs"
     runner.invoke(
         app,
         ["exec", str(path), "CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1)"],
@@ -75,7 +75,7 @@ def test_info_refuses_missing_and_foreign_files(tmp_path: Path) -> None:
     other = tmp_path / "notes.txt"
     other.write_text("hello")
 
-    assert runner.invoke(app, ["info", str(tmp_path / "missing.kdb")]).exit_code == 1
+    assert runner.invoke(app, ["info", str(tmp_path / "missing.mvrs")]).exit_code == 1
     result = runner.invoke(app, ["check", str(other)])
 
     assert result.exit_code == 1
@@ -84,7 +84,7 @@ def test_info_refuses_missing_and_foreign_files(tmp_path: Path) -> None:
 
 
 def test_check_reports_corruption(tmp_path: Path) -> None:
-    path = tmp_path / "cli.kdb"
+    path = tmp_path / "cli.mvrs"
     values = ", ".join(f"({i}, '{'x' * 200}')" for i in range(200))
     runner.invoke(
         app,
@@ -119,7 +119,7 @@ def test_shell_session(tmp_path: Path) -> None:
         ]
     )
 
-    result = runner.invoke(app, ["shell", str(tmp_path / "cli.kdb")], input=script + "\n")
+    result = runner.invoke(app, ["shell", str(tmp_path / "cli.mvrs")], input=script + "\n")
 
     assert result.exit_code == 0, result.output
     assert "no such table: nope" in result.output
@@ -165,4 +165,4 @@ def test_demo_script_runs_and_shows_recovery() -> None:
     assert "(1, 'asha', 400)" in completed.stdout  # the committed transfer survived
     assert "total money: 1250" in completed.stdout  # the half-finished one did not
     assert "integrity check passed" in completed.stdout
-    assert not list(demo.parent.glob("kestrel-demo-*"))  # it cleaned up after itself
+    assert not list(demo.parent.glob("mvrs_db-demo-*"))  # it cleaned up after itself

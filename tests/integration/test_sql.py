@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-import kestreldb
-from kestreldb.errors import (
+import mvrs_db
+from mvrs_db.errors import (
     CatalogError,
     ColumnNotFoundError,
     ConstraintViolationError,
@@ -26,14 +26,14 @@ from kestreldb.errors import (
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> Iterator[kestreldb.Database]:
-    database = kestreldb.connect(tmp_path / "test.kdb", synchronous=False)
+def db(tmp_path: Path) -> Iterator[mvrs_db.Database]:
+    database = mvrs_db.connect(tmp_path / "test.mvrs", synchronous=False)
     yield database
     database.close()
 
 
 @pytest.fixture
-def people(db: kestreldb.Database) -> kestreldb.Database:
+def people(db: mvrs_db.Database) -> mvrs_db.Database:
     db.execute(
         "CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
         "age INTEGER, score REAL, email TEXT UNIQUE)"
@@ -49,7 +49,7 @@ def people(db: kestreldb.Database) -> kestreldb.Database:
     return db
 
 
-def ids(db: kestreldb.Database, where: str = "", tail: str = "ORDER BY id") -> list[int]:
+def ids(db: mvrs_db.Database, where: str = "", tail: str = "ORDER BY id") -> list[int]:
     clause = f"WHERE {where}" if where else ""
     return [row[0] for row in db.execute(f"SELECT id FROM people {clause} {tail}").rows]
 
@@ -57,7 +57,7 @@ def ids(db: kestreldb.Database, where: str = "", tail: str = "ORDER BY id") -> l
 # ---------------------------------------------------------------------- basics
 
 
-def test_select_star_and_projection(people: kestreldb.Database) -> None:
+def test_select_star_and_projection(people: mvrs_db.Database) -> None:
     result = people.execute("SELECT * FROM people WHERE id = 1")
     assert result.columns == ("id", "name", "age", "score", "email")
     assert result.rows == [(1, "asha", 30, 9.5, "asha@x.io")]
@@ -68,7 +68,7 @@ def test_select_star_and_projection(people: kestreldb.Database) -> None:
     assert result.rows == [("mei@x.io", 3, 3)]
 
 
-def test_insert_with_column_list_fills_the_rest_with_null(people: kestreldb.Database) -> None:
+def test_insert_with_column_list_fills_the_rest_with_null(people: mvrs_db.Database) -> None:
     assert people.execute("INSERT INTO people (name, id) VALUES ('kim', 6)").rowcount == 1
 
     assert people.execute("SELECT * FROM people WHERE id = 6").rows == [
@@ -76,11 +76,11 @@ def test_insert_with_column_list_fills_the_rest_with_null(people: kestreldb.Data
     ]
 
 
-def test_identifiers_and_keywords_are_case_insensitive(people: kestreldb.Database) -> None:
+def test_identifiers_and_keywords_are_case_insensitive(people: mvrs_db.Database) -> None:
     assert people.execute("select NAME from PEOPLE where ID = 1").rows == [("asha",)]
 
 
-def test_text_values_are_stored_exactly(db: kestreldb.Database) -> None:
+def test_text_values_are_stored_exactly(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
     samples = ["", "it's", "line\nbreak\ttab", "emoji \U0001f600 ünïcode", "  spaces  ", "--x", ";"]
     for i, text in enumerate(samples):
@@ -122,7 +122,7 @@ def test_text_values_are_stored_exactly(db: kestreldb.Database) -> None:
         ("'a' < 'b'", [1, 2, 3, 4, 5]),
     ],
 )
-def test_where(people: kestreldb.Database, where: str, expected: list[int]) -> None:
+def test_where(people: mvrs_db.Database, where: str, expected: list[int]) -> None:
     assert ids(people, where) == expected
 
 
@@ -146,33 +146,33 @@ def test_where(people: kestreldb.Database, where: str, expected: list[int]) -> N
         ("score IS NULL AND email IS NOT NULL", [3]),
     ],
 )
-def test_three_valued_logic(people: kestreldb.Database, where: str, expected: list[int]) -> None:
+def test_three_valued_logic(people: mvrs_db.Database, where: str, expected: list[int]) -> None:
     assert ids(people, where) == expected
 
 
 # ---------------------------------------------------------------------- ORDER BY / LIMIT
 
 
-def test_order_by(people: kestreldb.Database) -> None:
+def test_order_by(people: mvrs_db.Database) -> None:
     assert ids(people, tail="ORDER BY name") == [1, 3, 4, 2, 5]
     assert ids(people, tail="ORDER BY name DESC") == [5, 2, 4, 3, 1]
     assert ids(people, tail="ORDER BY id DESC") == [5, 4, 3, 2, 1]
 
 
 def test_order_by_puts_nulls_first_ascending_and_last_descending(
-    people: kestreldb.Database,
+    people: mvrs_db.Database,
 ) -> None:
     assert ids(people, tail="ORDER BY age, id") == [2, 3, 5, 1, 4]
     assert ids(people, tail="ORDER BY age DESC, id") == [4, 1, 3, 5, 2]
     assert ids(people, tail="ORDER BY score DESC") == [1, 5, 2, 4, 3]
 
 
-def test_order_by_several_keys_with_mixed_directions(people: kestreldb.Database) -> None:
+def test_order_by_several_keys_with_mixed_directions(people: mvrs_db.Database) -> None:
     assert ids(people, tail="ORDER BY age ASC, name DESC") == [2, 5, 3, 1, 4]
     assert ids(people, tail="ORDER BY age DESC, name ASC") == [4, 1, 3, 5, 2]
 
 
-def test_limit(people: kestreldb.Database) -> None:
+def test_limit(people: mvrs_db.Database) -> None:
     assert ids(people, tail="ORDER BY id LIMIT 2") == [1, 2]
     assert ids(people, tail="ORDER BY id DESC LIMIT 2") == [5, 4]
     assert ids(people, tail="ORDER BY age DESC, name LIMIT 3") == [4, 1, 3]
@@ -203,19 +203,19 @@ def test_limit(people: kestreldb.Database) -> None:
         "EXPLAIN SELECT * FROM people WHERE name < 3",
     ],
 )
-def test_type_mismatches_are_rejected(people: kestreldb.Database, statement: str) -> None:
+def test_type_mismatches_are_rejected(people: mvrs_db.Database, statement: str) -> None:
     with pytest.raises(TypeMismatchError):
         people.execute(statement)
     assert ids(people) == [1, 2, 3, 4, 5]
 
 
-def test_type_error_is_raised_even_when_no_row_would_match(db: kestreldb.Database) -> None:
+def test_type_error_is_raised_even_when_no_row_would_match(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE empty (id INTEGER PRIMARY KEY, name TEXT)")
     with pytest.raises(TypeMismatchError):
         db.execute("SELECT * FROM empty WHERE name = 1")
 
 
-def test_integer_literal_is_converted_for_a_real_column(db: kestreldb.Database) -> None:
+def test_integer_literal_is_converted_for_a_real_column(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE m (id INTEGER PRIMARY KEY, x REAL)")
     db.execute("INSERT INTO m VALUES (1, 5)")
 
@@ -223,7 +223,7 @@ def test_integer_literal_is_converted_for_a_real_column(db: kestreldb.Database) 
     assert value == 5.0 and type(value) is float
 
 
-def test_extreme_numbers_round_trip(db: kestreldb.Database) -> None:
+def test_extreme_numbers_round_trip(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE m (id INTEGER PRIMARY KEY, x REAL)")
     db.execute("INSERT INTO m VALUES (-9223372036854775808, 1.7976931348623157e308)")
     db.execute("INSERT INTO m VALUES (9223372036854775807, -5e-324)")
@@ -238,7 +238,7 @@ def test_extreme_numbers_round_trip(db: kestreldb.Database) -> None:
 # ---------------------------------------------------------------------- constraints
 
 
-def test_primary_key_must_be_unique_and_not_null(people: kestreldb.Database) -> None:
+def test_primary_key_must_be_unique_and_not_null(people: mvrs_db.Database) -> None:
     with pytest.raises(ConstraintViolationError, match="PRIMARY KEY.*people.id = 3"):
         people.execute("INSERT INTO people VALUES (3, 'dup', 1, 1.0, NULL)")
     with pytest.raises(ConstraintViolationError, match="NOT NULL.*people.id"):
@@ -248,7 +248,7 @@ def test_primary_key_must_be_unique_and_not_null(people: kestreldb.Database) -> 
     assert ids(people) == [1, 2, 3, 4, 5]
 
 
-def test_not_null(people: kestreldb.Database) -> None:
+def test_not_null(people: mvrs_db.Database) -> None:
     with pytest.raises(ConstraintViolationError, match="NOT NULL.*people.name"):
         people.execute("INSERT INTO people VALUES (6, NULL, 1, 1.0, NULL)")
     with pytest.raises(ConstraintViolationError, match="NOT NULL.*people.name"):
@@ -256,7 +256,7 @@ def test_not_null(people: kestreldb.Database) -> None:
     assert people.execute("UPDATE people SET name = NULL WHERE id = 99").rowcount == 0
 
 
-def test_unique_allows_many_nulls_but_no_duplicates(people: kestreldb.Database) -> None:
+def test_unique_allows_many_nulls_but_no_duplicates(people: mvrs_db.Database) -> None:
     people.execute("INSERT INTO people VALUES (6, 'kim', 1, 1.0, NULL)")  # a third NULL email
     with pytest.raises(ConstraintViolationError, match="UNIQUE.*people.email"):
         people.execute("INSERT INTO people VALUES (7, 'dup', 1, 1.0, 'mei@x.io')")
@@ -265,7 +265,7 @@ def test_unique_allows_many_nulls_but_no_duplicates(people: kestreldb.Database) 
     assert ids(people, "email IS NULL") == [2, 4, 6]
 
 
-def test_failed_multi_row_insert_inserts_nothing(people: kestreldb.Database) -> None:
+def test_failed_multi_row_insert_inserts_nothing(people: mvrs_db.Database) -> None:
     with pytest.raises(ConstraintViolationError):
         people.execute(
             "INSERT INTO people VALUES (6, 'a', 1, 1.0, NULL), (7, 'b', 1, 1.0, NULL), "
@@ -275,13 +275,13 @@ def test_failed_multi_row_insert_inserts_nothing(people: kestreldb.Database) -> 
     people.check()
 
 
-def test_duplicate_keys_within_one_insert_are_caught(people: kestreldb.Database) -> None:
+def test_duplicate_keys_within_one_insert_are_caught(people: mvrs_db.Database) -> None:
     with pytest.raises(ConstraintViolationError):
         people.execute("INSERT INTO people VALUES (8, 'a', 1, 1.0, NULL), (8, 'b', 1, 1.0, NULL)")
     assert ids(people) == [1, 2, 3, 4, 5]
 
 
-def test_failed_multi_row_update_changes_nothing(people: kestreldb.Database) -> None:
+def test_failed_multi_row_update_changes_nothing(people: mvrs_db.Database) -> None:
     with pytest.raises(ConstraintViolationError):
         people.execute("UPDATE people SET email = 'same@x.io'")  # the second row collides
     assert people.execute("SELECT email FROM people ORDER BY id").rows == [
@@ -297,7 +297,7 @@ def test_failed_multi_row_update_changes_nothing(people: kestreldb.Database) -> 
 # ---------------------------------------------------------------------- UPDATE / DELETE
 
 
-def test_update(people: kestreldb.Database) -> None:
+def test_update(people: mvrs_db.Database) -> None:
     assert people.execute("UPDATE people SET age = 26, score = 1 WHERE age = 25").rowcount == 2
     assert people.execute("SELECT id, age, score FROM people WHERE age = 26 ORDER BY id").rows == [
         (3, 26, 1.0),
@@ -309,7 +309,7 @@ def test_update(people: kestreldb.Database) -> None:
 
 
 def test_update_of_primary_key_and_unique_columns_keeps_indexes_right(
-    people: kestreldb.Database,
+    people: mvrs_db.Database,
 ) -> None:
     people.execute("UPDATE people SET id = 10 WHERE id = 1")
     people.execute("UPDATE people SET email = 'new@x.io' WHERE id = 3")
@@ -328,7 +328,7 @@ def test_update_of_primary_key_and_unique_columns_keeps_indexes_right(
     people.check()
 
 
-def test_update_that_grows_rows_past_their_page(db: kestreldb.Database) -> None:
+def test_update_that_grows_rows_past_their_page(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT, tag TEXT UNIQUE)")
     for i in range(60):
         db.execute(f"INSERT INTO docs VALUES ({i}, 'small', 'tag{i}')")
@@ -345,7 +345,7 @@ def test_update_that_grows_rows_past_their_page(db: kestreldb.Database) -> None:
     db.check()
 
 
-def test_update_touches_each_row_once_even_if_it_moves(db: kestreldb.Database) -> None:
+def test_update_touches_each_row_once_even_if_it_moves(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)")
     for i in range(200):
         db.execute(f"INSERT INTO t VALUES ({i}, 'a')")
@@ -355,7 +355,7 @@ def test_update_touches_each_row_once_even_if_it_moves(db: kestreldb.Database) -
     db.check()
 
 
-def test_delete(people: kestreldb.Database) -> None:
+def test_delete(people: mvrs_db.Database) -> None:
     assert people.execute("DELETE FROM people WHERE age = 25").rowcount == 2
     assert ids(people) == [1, 2, 4]
     assert people.execute("SELECT id FROM people WHERE id = 3").rows == []
@@ -369,7 +369,7 @@ def test_delete(people: kestreldb.Database) -> None:
 # ---------------------------------------------------------------------- DDL
 
 
-def test_create_table_rules(db: kestreldb.Database) -> None:
+def test_create_table_rules(db: mvrs_db.Database) -> None:
     with pytest.raises(CatalogError, match="exactly one PRIMARY KEY"):
         db.execute("CREATE TABLE t (a INTEGER, b TEXT)")
     with pytest.raises(CatalogError, match="exactly one PRIMARY KEY"):
@@ -387,7 +387,7 @@ def test_create_table_rules(db: kestreldb.Database) -> None:
     assert db.table_names() == ["t"]
 
 
-def test_text_and_real_primary_keys(db: kestreldb.Database) -> None:
+def test_text_and_real_primary_keys(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE codes (code TEXT PRIMARY KEY, n INTEGER)")
     db.execute("CREATE TABLE temps (t REAL PRIMARY KEY, n INTEGER)")
     db.execute("INSERT INTO codes VALUES ('b', 2), ('a', 1), ('', 0), ('ab', 3)")
@@ -406,7 +406,7 @@ def test_text_and_real_primary_keys(db: kestreldb.Database) -> None:
     db.check()
 
 
-def test_drop_table_frees_its_pages_for_reuse(db: kestreldb.Database) -> None:
+def test_drop_table_frees_its_pages_for_reuse(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE big (id INTEGER PRIMARY KEY, body TEXT, tag TEXT UNIQUE)")
     db.execute("BEGIN")
     for i in range(2000):
@@ -442,7 +442,7 @@ def test_drop_table_frees_its_pages_for_reuse(db: kestreldb.Database) -> None:
         "EXPLAIN SELECT * FROM missing",
     ],
 )
-def test_unknown_table(db: kestreldb.Database, statement: str) -> None:
+def test_unknown_table(db: mvrs_db.Database, statement: str) -> None:
     with pytest.raises(TableNotFoundError):
         db.execute(statement)
 
@@ -458,7 +458,7 @@ def test_unknown_table(db: kestreldb.Database, statement: str) -> None:
         "DELETE FROM people WHERE nope IS NULL",
     ],
 )
-def test_unknown_column(people: kestreldb.Database, statement: str) -> None:
+def test_unknown_column(people: mvrs_db.Database, statement: str) -> None:
     with pytest.raises(ColumnNotFoundError):
         people.execute(statement)
 
@@ -472,7 +472,7 @@ def test_unknown_column(people: kestreldb.Database, statement: str) -> None:
         "UPDATE people SET age = 1, age = 2",
     ],
 )
-def test_malformed_statements_are_rejected(people: kestreldb.Database, statement: str) -> None:
+def test_malformed_statements_are_rejected(people: mvrs_db.Database, statement: str) -> None:
     with pytest.raises(SqlError):
         people.execute(statement)
     assert ids(people) == [1, 2, 3, 4, 5]
@@ -481,7 +481,7 @@ def test_malformed_statements_are_rejected(people: kestreldb.Database, statement
 # ---------------------------------------------------------------------- limits
 
 
-def test_record_size_limit(db: kestreldb.Database) -> None:
+def test_record_size_limit(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT)")
     db.execute(f"INSERT INTO docs VALUES (1, '{'x' * 4000}')")
 
@@ -494,7 +494,7 @@ def test_record_size_limit(db: kestreldb.Database) -> None:
     db.check()
 
 
-def test_index_key_size_limit(db: kestreldb.Database) -> None:
+def test_index_key_size_limit(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE codes (code TEXT PRIMARY KEY)")
     db.execute(f"INSERT INTO codes VALUES ('{'k' * 255}')")
 
@@ -511,8 +511,8 @@ def test_index_key_size_limit(db: kestreldb.Database) -> None:
 
 
 def test_everything_survives_close_and_reopen(tmp_path: Path) -> None:
-    path = tmp_path / "test.kdb"
-    with kestreldb.connect(path) as db:
+    path = tmp_path / "test.mvrs"
+    with mvrs_db.connect(path) as db:
         db.execute("CREATE TABLE a (id INTEGER PRIMARY KEY, v TEXT UNIQUE)")
         db.execute("CREATE TABLE b (k TEXT PRIMARY KEY, x REAL)")
         db.execute("CREATE TABLE gone (id INTEGER PRIMARY KEY)")
@@ -525,7 +525,7 @@ def test_everything_survives_close_and_reopen(tmp_path: Path) -> None:
         db.execute("UPDATE a SET v = 'changed' WHERE id = 7")
         db.execute("DROP TABLE gone")
 
-    with kestreldb.connect(path, create=False) as db:
+    with mvrs_db.connect(path, create=False) as db:
         assert db.table_names() == ["a", "b"]
         assert db.check().tables == {"a": 2000, "b": 2}
         assert db.execute("SELECT v FROM a WHERE id = 7").rows == [("changed",)]
@@ -534,52 +534,52 @@ def test_everything_survives_close_and_reopen(tmp_path: Path) -> None:
         assert db.execute("SELECT x FROM b WHERE k = 'pi'").rows == [(3.14159,)]
         db.execute("INSERT INTO a VALUES (5000, 'after reopen')")
 
-    with kestreldb.connect(path) as db:
+    with mvrs_db.connect(path) as db:
         assert db.execute("SELECT v FROM a WHERE id = 5000").rows == [("after reopen",)]
         assert db.recovery.pages_restored == 0  # a clean close leaves nothing to recover
 
 
 @pytest.mark.parametrize("page_size", [4096, 8192, 32768])
 def test_page_sizes(tmp_path: Path, page_size: int) -> None:
-    path = tmp_path / "test.kdb"
-    with kestreldb.connect(path, page_size=page_size) as db:
+    path = tmp_path / "test.mvrs"
+    with mvrs_db.connect(path, page_size=page_size) as db:
         db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)")
         db.execute("BEGIN")
         for i in range(500):
             db.execute(f"INSERT INTO t VALUES ({i}, '{'x' * 200}')")
         db.execute("COMMIT")
 
-    with kestreldb.connect(path) as db:  # the page size comes from the file, not the argument
+    with mvrs_db.connect(path) as db:  # the page size comes from the file, not the argument
         assert db.page_size == page_size
         assert db.check().tables == {"t": 500}
 
 
 def test_open_refuses_missing_and_foreign_files(tmp_path: Path) -> None:
     with pytest.raises(DatabaseNotFoundError):
-        kestreldb.connect(tmp_path / "missing.kdb", create=False)
+        mvrs_db.connect(tmp_path / "missing.mvrs", create=False)
     assert list(tmp_path.iterdir()) == []
 
     other = tmp_path / "notes.txt"
     other.write_text("not a database")
     with pytest.raises(NotADatabaseError):
-        kestreldb.connect(other)
+        mvrs_db.connect(other)
     assert other.read_text() == "not a database"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["notes.txt"]  # no stray log or lock
 
 
 def test_second_open_is_refused_until_the_first_closes(tmp_path: Path) -> None:
-    path = tmp_path / "test.kdb"
-    first = kestreldb.connect(path)
+    path = tmp_path / "test.mvrs"
+    first = mvrs_db.connect(path)
 
     with pytest.raises(DatabaseLockedError):
-        kestreldb.connect(path)
+        mvrs_db.connect(path)
 
     first.close()
-    kestreldb.connect(path).close()
+    mvrs_db.connect(path).close()
 
 
 def test_use_after_close(tmp_path: Path) -> None:
-    db = kestreldb.connect(tmp_path / "test.kdb")
+    db = mvrs_db.connect(tmp_path / "test.mvrs")
     db.close()
     db.close()  # closing twice is harmless
 
@@ -590,7 +590,7 @@ def test_use_after_close(tmp_path: Path) -> None:
 
 
 def test_small_buffer_pool_still_works(tmp_path: Path) -> None:
-    with kestreldb.connect(tmp_path / "test.kdb", buffer_pages=16, synchronous=False) as db:
+    with mvrs_db.connect(tmp_path / "test.mvrs", buffer_pages=16, synchronous=False) as db:
         db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)")
         for start in range(0, 3000, 50):
             values = ", ".join(f"({i}, '{'x' * 150}')" for i in range(start, start + 50))

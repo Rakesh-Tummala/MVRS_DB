@@ -6,14 +6,14 @@ import struct
 
 import pytest
 
-from kestreldb import config
-from kestreldb.errors import (
+from mvrs_db import config
+from mvrs_db.errors import (
     ChecksumMismatchError,
     CorruptPageError,
     PageIdMismatchError,
     UnsupportedVersionError,
 )
-from kestreldb.storage.page import (
+from mvrs_db.storage.page import (
     PAGE_HEADER,
     PAGE_HEADER_SIZE,
     PageType,

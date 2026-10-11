@@ -1,6 +1,6 @@
 # 05 — Write-ahead log, torn writes and recovery
 
-Code: `kestreldb/recovery/wal.py`, `kestreldb/recovery/recovery_manager.py`, and the commit and checkpoint code in `kestreldb/database.py`. Tests: `tests/unit/test_wal.py`, `tests/unit/test_recovery.py`, `tests/crash_recovery/`.
+Code: `mvrs_db/recovery/wal.py`, `mvrs_db/recovery/recovery_manager.py`, and the commit and checkpoint code in `mvrs_db/database.py`. Tests: `tests/unit/test_wal.py`, `tests/unit/test_recovery.py`, `tests/crash_recovery/`.
 
 ## The problem
 
@@ -38,9 +38,9 @@ No-steal means a transaction's dirty pages stay in the buffer pool until commit.
 
 ## Log file
 
-`name.kdb.wal`: a 40-byte header, then records back to back.
+`name.mvrs.wal`: a 40-byte header, then records back to back.
 
-Header (`<8sHHIQQ4sI`): magic `KESTWAL\0`, version, reserved, page size, `db_id`, `base_lsn`, reserved, CRC32 of the 36 bytes before it. `db_id` must match the data file, so a log can never be replayed into the wrong database.
+Header (`<8sHHIQQ4sI`): magic `MVRSWAL\0`, version, reserved, page size, `db_id`, `base_lsn`, reserved, CRC32 of the 36 bytes before it. `db_id` must match the data file, so a log can never be replayed into the wrong database.
 
 Record (`<IIQQB` + payload):
 
@@ -131,7 +131,7 @@ On open, before anything else reads the data file:
 
 ## What is tested
 
-58 tests in `tests/crash_recovery/` start a child process, kill it with `os._exit` at an injected point (`kestreldb/faults.py`), reopen, and check durability, atomicity and `Database.check()`. Two workloads are used: row changes across two indexes, and creating and dropping tables.
+58 tests in `tests/crash_recovery/` start a child process, kill it with `os._exit` at an injected point (`mvrs_db/faults.py`), reopen, and check durability, atomicity and `Database.check()`. Two workloads are used: row changes across two indexes, and creating and dropping tables.
 
 | Crash point | Outcome required for the transaction in flight |
 |---|---|

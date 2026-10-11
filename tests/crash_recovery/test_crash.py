@@ -23,9 +23,9 @@ from pathlib import Path
 
 import pytest
 
-import kestreldb
-from kestreldb import faults
-from kestreldb.recovery.wal import WAL_HEADER_SIZE, read_wal
+import mvrs_db
+from mvrs_db import faults
+from mvrs_db.recovery.wal import WAL_HEADER_SIZE, read_wal
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import scenarios  # noqa: E402
@@ -77,7 +77,7 @@ def acknowledged(path: Path) -> tuple[bool, int]:
     return "setup" in lines, sum(1 for line in lines if line.isdigit())
 
 
-def verify(path: Path, scenario: str, in_flight: bool | None = None) -> kestreldb.Database:
+def verify(path: Path, scenario: str, in_flight: bool | None = None) -> mvrs_db.Database:
     """Open the database (running recovery) and check it against the acknowledgements.
 
     `in_flight` says what must have happened to the one transaction that was
@@ -85,7 +85,7 @@ def verify(path: Path, scenario: str, in_flight: bool | None = None) -> kestreld
     be absent, None = either is acceptable (but never half of it).
     """
     setup_done, acked = acknowledged(path)
-    db = kestreldb.connect(path, create=False)
+    db = mvrs_db.connect(path, create=False)
     try:
         db.check()
         visible = scenarios.visible_transactions(db)
@@ -144,14 +144,14 @@ CRASH_POINTS = [
 def test_crash_then_recover(
     tmp_path: Path, scenario: str, crash_at: str, in_flight: bool | None
 ) -> None:
-    path = tmp_path / "crash.kdb"
+    path = tmp_path / "crash.mvrs"
 
     code = run_worker(path, scenario, crash_at=crash_at)
 
     assert code == faults.CRASH_EXIT_CODE, f"the worker never reached {crash_at}"
     verify(path, scenario, in_flight).close()
     # Recovery left a database that keeps working and stays consistent.
-    with kestreldb.connect(path) as db:
+    with mvrs_db.connect(path) as db:
         db.execute("CREATE TABLE after_crash (id INTEGER PRIMARY KEY)")
         db.execute("INSERT INTO after_crash VALUES (1)")
         db.check()
@@ -160,7 +160,7 @@ def test_crash_then_recover(
 @pytest.mark.parametrize("scenario", ["rows", "ddl"])
 def test_crash_while_creating_the_database(tmp_path: Path, scenario: str) -> None:
     """The very first log write of a new database is the catalog itself."""
-    path = tmp_path / "crash.kdb"
+    path = tmp_path / "crash.mvrs"
 
     for crash_at in ("commit.before_log:1", "wal.partial_flush:1", "wal.after_sync:1"):
         for suffix in ("", ".wal", ".ack", ".lock"):
@@ -174,7 +174,7 @@ def test_crash_while_creating_the_database(tmp_path: Path, scenario: str) -> Non
 @pytest.mark.parametrize("scenario", ["rows", "ddl"])
 def test_killed_while_idle_with_nothing_checkpointed(tmp_path: Path, scenario: str) -> None:
     """After commit but before any dirty page is flushed: everything comes from the log."""
-    path = tmp_path / "crash.kdb"
+    path = tmp_path / "crash.mvrs"
 
     run_worker(path, scenario, buffer_pages=2000, checkpoint_bytes=HUGE_LOG, die_at_end=True)
 
@@ -203,7 +203,7 @@ def test_crash_during_recovery_then_recover_again(
     tmp_path: Path, scenario: str, crash_at: str
 ) -> None:
     """Recovery must be repeatable: crash in the middle of it, then run it again."""
-    path = tmp_path / "crash.kdb"
+    path = tmp_path / "crash.mvrs"
     run_worker(path, scenario, buffer_pages=2000, checkpoint_bytes=HUGE_LOG, die_at_end=True)
 
     # This child only opens the database, so the crash lands inside recovery.
@@ -218,7 +218,7 @@ def test_crash_during_recovery_then_recover_again(
 
 
 def test_recovering_twice_changes_nothing(tmp_path: Path) -> None:
-    path = tmp_path / "crash.kdb"
+    path = tmp_path / "crash.mvrs"
     run_worker(path, "rows", buffer_pages=2000, checkpoint_bytes=HUGE_LOG, die_at_end=True)
 
     verify(path, "rows").close()
@@ -233,7 +233,7 @@ def test_recovering_twice_changes_nothing(tmp_path: Path) -> None:
 @pytest.mark.parametrize("scenario", ["rows", "ddl"])
 def test_truncated_log_tail(tmp_path: Path, scenario: str) -> None:
     """Cut the log at many points. Recovery must keep a whole number of transactions."""
-    path = tmp_path / "crash.kdb"
+    path = tmp_path / "crash.mvrs"
     wal_path = Path(str(path) + ".wal")
     run_worker(path, scenario, buffer_pages=2000, checkpoint_bytes=HUGE_LOG, die_at_end=True)
     data, log = path.read_bytes(), wal_path.read_bytes()
@@ -243,7 +243,7 @@ def test_truncated_log_tail(tmp_path: Path, scenario: str) -> None:
     for cut in [*range(WAL_HEADER_SIZE, len(log), len(log) // 24), len(log) - 1]:
         path.write_bytes(data)
         wal_path.write_bytes(log[:cut])
-        with kestreldb.connect(path, create=False) as db:
+        with mvrs_db.connect(path, create=False) as db:
             db.check()
             visible = scenarios.visible_transactions(db)
             if visible is not None:
@@ -257,7 +257,7 @@ def test_truncated_log_tail(tmp_path: Path, scenario: str) -> None:
 @pytest.mark.parametrize("scenario", ["rows", "ddl"])
 def test_corrupted_log_tail(tmp_path: Path, scenario: str) -> None:
     """Damage a byte in each of the last few records. Earlier transactions must survive."""
-    path = tmp_path / "crash.kdb"
+    path = tmp_path / "crash.mvrs"
     wal_path = Path(str(path) + ".wal")
     run_worker(path, scenario, buffer_pages=2000, checkpoint_bytes=HUGE_LOG, die_at_end=True)
     data, log = path.read_bytes(), wal_path.read_bytes()
@@ -270,7 +270,7 @@ def test_corrupted_log_tail(tmp_path: Path, scenario: str) -> None:
         damaged[offset + 30 if record.payload else offset + 5] ^= 0xFF
         path.write_bytes(data)
         wal_path.write_bytes(damaged)
-        with kestreldb.connect(path, create=False) as db:
+        with mvrs_db.connect(path, create=False) as db:
             db.check()
             visible = scenarios.visible_transactions(db)
             assert visible is not None and visible >= TRANSACTIONS - 3
@@ -279,7 +279,7 @@ def test_corrupted_log_tail(tmp_path: Path, scenario: str) -> None:
 
 
 def test_clean_run_needs_no_recovery(tmp_path: Path) -> None:
-    path = tmp_path / "crash.kdb"
+    path = tmp_path / "crash.mvrs"
 
     assert run_worker(path, "rows") == 0
 

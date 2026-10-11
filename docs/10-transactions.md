@@ -1,6 +1,6 @@
 # 10 — Transactions and concurrency
 
-Code: `kestreldb/database.py` (`Connection`, `Database._run`, `_finish`), `kestreldb/transactions/lock_manager.py`. Tests: `tests/integration/test_transactions.py`, `tests/concurrency/`.
+Code: `mvrs_db/database.py` (`Connection`, `Database._run`, `_finish`), `mvrs_db/transactions/lock_manager.py`. Tests: `tests/integration/test_transactions.py`, `tests/concurrency/`.
 
 ## Model
 

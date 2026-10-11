@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from kestreldb.errors import QueryTooLargeError, SqlSyntaxError
-from kestreldb.sql import ast
-from kestreldb.sql.lexer import TokenKind, tokenize
-from kestreldb.sql.parser import parse
+from mvrs_db.errors import QueryTooLargeError, SqlSyntaxError
+from mvrs_db.sql import ast
+from mvrs_db.sql.lexer import TokenKind, tokenize
+from mvrs_db.sql.parser import parse
 
 C, L = ast.ColumnRef, ast.Literal
 

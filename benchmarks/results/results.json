@@ -11,7 +11,7 @@
   },
   "generated": "2026-10-11T00:57:38",
   "quick": false,
-  "kestreldb_version": "0.1.0",
+  "mvrs_db_version": "0.1.0",
   "load": [
     {
       "rows": 1000,
@@ -502,7 +502,7 @@
       },
       "full_scan_ms": 71.32460000138963
     },
-    "kestreldb": {
+    "mvrs_db": {
       "load_rows_per_second": 4024.757312567523,
       "lookup": {
         "median_us": 185.19999866839498,

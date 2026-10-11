@@ -6,7 +6,7 @@ Runs the scenario's setup and then its transactions in order. After each COMMIT
 returns, it appends a line to "<database path>.ack" and fsyncs it. That file is
 the parent's proof of which commits were acknowledged before the process died.
 
-The crash itself comes from KESTREL_CRASH_AT (see kestreldb/faults.py), which
+The crash itself comes from MVRS_CRASH_AT (see mvrs_db/faults.py), which
 makes the engine call os._exit at a chosen point. With "exit" as a sixth
 argument the worker instead dies right after its last transaction, without
 closing the database, as if killed while idle.
@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import scenarios  # noqa: E402
 
-import kestreldb  # noqa: E402
+import mvrs_db  # noqa: E402
 
 
 def main() -> None:
@@ -37,7 +37,7 @@ def main() -> None:
         os.write(ack_fd, (line + "\n").encode())
         os.fsync(ack_fd)
 
-    db = kestreldb.connect(path, buffer_pages=buffer_pages, checkpoint_bytes=checkpoint_bytes)
+    db = mvrs_db.connect(path, buffer_pages=buffer_pages, checkpoint_bytes=checkpoint_bytes)
     setup(db)
     acknowledge("setup")
     for k in range(transactions):

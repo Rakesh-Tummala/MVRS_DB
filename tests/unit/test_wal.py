@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from kestreldb.errors import CorruptWalError
-from kestreldb.recovery.wal import (
+from mvrs_db.errors import CorruptWalError
+from mvrs_db.recovery.wal import (
     RECORD_HEADER_SIZE,
     WAL_HEADER_SIZE,
     RecordType,
@@ -181,7 +181,7 @@ def test_damaged_header_is_an_error(tmp_path: Path, offset: int) -> None:
 
 def test_truncated_header_is_an_error(tmp_path: Path) -> None:
     path = tmp_path / "db.wal"
-    path.write_bytes(b"KESTWAL\x00 too short")
+    path.write_bytes(b"MVRSWAL\x00 too short")
 
     with pytest.raises(CorruptWalError):
         read_wal(path)
@@ -235,7 +235,7 @@ def test_records_left_behind_by_an_interrupted_reset_are_ignored(tmp_path: Path)
     assert before is not None
 
     new_base = before.next_lsn
-    body = struct.pack("<8sHHIQQ4s", b"KESTWAL\x00", 1, 0, PAGE_SIZE, DB_ID, new_base, bytes(4))
+    body = struct.pack("<8sHHIQQ4s", b"MVRSWAL\x00", 1, 0, PAGE_SIZE, DB_ID, new_base, bytes(4))
     path.write_bytes(body + struct.pack("<I", zlib.crc32(body)) + old[WAL_HEADER_SIZE:])
 
     contents = read_wal(path)

@@ -17,11 +17,11 @@ dist/
 
 # Scratch output
 benchmarks/results/results-quick.json
-examples/kestrel-demo-*/
+examples/mvrs_db-demo-*/
 
 # Database and log files
-*.kdb
-*.kdb.wal
+*.mvrs
+*.mvrs.wal
 *.wal
 
 # Editors and OS

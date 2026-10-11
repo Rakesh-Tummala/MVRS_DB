@@ -1,6 +1,6 @@
 # 09 — B+ tree
 
-Code: `kestreldb/index/keys.py`, `btree_node.py`, `btree.py`. Tests: `tests/unit/test_keys.py`, `tests/unit/test_btree.py`, `tests/property/test_btree_model.py`.
+Code: `mvrs_db/index/keys.py`, `btree_node.py`, `btree.py`. Tests: `tests/unit/test_keys.py`, `tests/unit/test_btree.py`, `tests/property/test_btree_model.py`.
 
 ## What it is for
 

@@ -1,6 +1,6 @@
-# KestrelDB — working rules
+# MVRS_DB — working rules
 
-KestrelDB is a persistent relational database engine written from scratch in Python. I am a computer science student building it to learn systems engineering and to defend every design decision in SDE interviews. The goal is my understanding, not just a finished repository. If I cannot explain a part of the code, the project has failed at its main purpose.
+MVRS_DB is a persistent relational database engine written from scratch in Python. I am a computer science student building it to learn systems engineering and to defend every design decision in SDE interviews. The goal is my understanding, not just a finished repository. If I cannot explain a part of the code, the project has failed at its main purpose.
 
 You act as a senior database kernel engineer and a patient mentor.
 
@@ -58,7 +58,7 @@ The C: drive is nearly full. Nothing from this project may be written to C:.
 * `pytest` and `hypothesis` for tests; `ruff` for lint/format; `mypy` for type checking; `typer` for the CLI.
 * `numpy` only for the optional vector extension; `matplotlib` only for benchmark graphs; FastAPI only if a server is clearly needed later.
 * Git, local. Commit after each green milestone with a meaningful message. Ask me before adding a GitHub remote or pushing.
-* **Forbidden** inside KestrelDB's storage or execution: SQLite, PostgreSQL, DuckDB, SQLAlchemy, or any other database engine. SQLite is allowed only as an external benchmark baseline, with the Python-vs-C caveat in every report.
+* **Forbidden** inside MVRS_DB's storage or execution: SQLite, PostgreSQL, DuckDB, SQLAlchemy, or any other database engine. SQLite is allowed only as an external benchmark baseline, with the Python-vs-C caveat in every report.
 * No `pickle` or other Python object serialisation as the permanent file format. Avoid unnecessary dependencies.
 
 ## Engineering standards
@@ -98,7 +98,7 @@ Set `TEMP` and `TMP` to `W:\a_db\.tmp` first (see Environment rules).
 
 * Tests: `.venv\Scripts\python.exe -m pytest -q` (add `-m "not crash"` to skip the slow crash tests)
 * Lint and format: `.venv\Scripts\python.exe -m ruff check .` and `.venv\Scripts\python.exe -m ruff format .`
-* Types: `.venv\Scripts\python.exe -m mypy kestreldb`
+* Types: `.venv\Scripts\python.exe -m mypy mvrs_db`
 * Benchmarks: `.venv\Scripts\python.exe benchmarks\run_benchmarks.py` (do not run tests at the same time; it skews the timings)
 * Demo: `.venv\Scripts\python.exe examples\demo.py`
 
@@ -106,6 +106,6 @@ Set `TEMP` and `TMP` to `W:\a_db\.tmp` first (see Environment rules).
 
 * Every module starts with a docstring explaining the idea, the on-disk layout if any, and the main trade-off.
 * Invariants have IDs (`H1`, `T4`, `B7`, ...) defined in `docs/07-invariants.md`; error messages and tests refer to them.
-* All deliberate errors derive from `KestrelError` in `kestreldb/errors.py`.
+* All deliberate errors derive from `MvrsDbError` in `mvrs_db/errors.py`.
 * Layering is enforced by `tests/unit/test_layering.py`. Add a new package to its allow-list when creating one.
-* Crash injection points are named strings passed to `faults.crash_point()`; the crash tests select one through the `KESTREL_CRASH_AT` environment variable.
+* Crash injection points are named strings passed to `faults.crash_point()`; the crash tests select one through the `MVRS_CRASH_AT` environment variable.

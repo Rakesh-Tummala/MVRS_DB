@@ -1,10 +1,10 @@
-# KestrelDB benchmark report
+# MVRS_DB benchmark report
 
-Generated 2026-10-11T00:57:38 by `python benchmarks/run_benchmarks.py` (KestrelDB 0.1.0). Every number below was measured in that run and is stored in `results.json` next to this file.
+Generated 2026-10-11T00:57:38 by `python benchmarks/run_benchmarks.py` (MVRS_DB 0.1.0). Every number below was measured in that run and is stored in `results.json` next to this file.
 
 ## Read this first
 
-- **KestrelDB is written in Python.** It is one to three orders of magnitude slower than engines written in C. The comparisons that mean something here are *internal*: the same engine with and without an index, with and without fsync, with different buffer pool and page sizes.
+- **MVRS_DB is written in Python.** It is one to three orders of magnitude slower than engines written in C. The comparisons that mean something here are *internal*: the same engine with and without an index, with and without fsync, with different buffer pool and page sizes.
 - **Single run, one machine.** Latencies are medians with p95/p99 over the stated number of samples; throughput figures are from one pass unless a median of several is stated. Expect run-to-run variation of 10-20%.
 - **Warm cache unless stated.** Tables are loaded and queried in the same process, so pages are in the buffer pool. "After reopen" means the buffer pool is empty but the operating system's file cache is still warm; a truly cold disk read was not measured because the OS cache cannot be dropped from a normal user process.
 - **Timings include SQL parsing**, which is a large share of a point lookup.
@@ -187,11 +187,11 @@ Reproduce: `python benchmarks/run_benchmarks.py --only crossover`
 
 ## 11. SQLite, for scale only
 
-> **SQLite 3.50.4 is written in C. KestrelDB is written in Python.** These numbers show the size of that gap. They are not a contest, and nothing here suggests KestrelDB could replace SQLite.
+> **SQLite 3.50.4 is written in C. MVRS_DB is written in Python.** These numbers show the size of that gap. They are not a contest, and nothing here suggests MVRS_DB could replace SQLite.
 
-Identical SQL statements, 100,000 rows, one transaction per 500-row `INSERT`, no fsync on either side (KestrelDB `synchronous=False`; SQLite `PRAGMA synchronous=OFF` with its default rollback journal), then 2,000 primary-key lookups and a full scan.
+Identical SQL statements, 100,000 rows, one transaction per 500-row `INSERT`, no fsync on either side (MVRS_DB `synchronous=False`; SQLite `PRAGMA synchronous=OFF` with its default rollback journal), then 2,000 primary-key lookups and a full scan.
 
-| Operation | KestrelDB | SQLite | SQLite is faster by |
+| Operation | MVRS_DB | SQLite | SQLite is faster by |
 |---|---|---|---|
 | Insert, rows/second | 4,025 | 257,737 | 64x |
 | Point lookup, median microseconds | 185.2 | 26.5 | 7x |

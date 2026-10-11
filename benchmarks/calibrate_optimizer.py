@@ -2,7 +2,7 @@
 
     python benchmarks/calibrate_optimizer.py
 
-The cost model in kestreldb/planner/optimizer.py says:
+The cost model in mvrs_db/planner/optimizer.py says:
 
     sequential scan = pages * SEQ_PAGE + rows * ROW_CPU
     index scan      = matching_rows * INDEX_ROW   (plus a few pages for the descent)
@@ -27,16 +27,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import kestreldb
+import mvrs_db
 from common import scratch_dir
-from kestreldb.execution.operators import IndexScan, KeyRange, SeqScan, Sort
+from mvrs_db.execution.operators import IndexScan, KeyRange, SeqScan, Sort
 
 ROWS = 30_000
 REPEATS = 5
 
 
-def build(path: Path, payload_bytes: int) -> kestreldb.Database:
-    db = kestreldb.connect(path, synchronous=False, buffer_pages=8192)
+def build(path: Path, payload_bytes: int) -> mvrs_db.Database:
+    db = mvrs_db.connect(path, synchronous=False, buffer_pages=8192)
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, payload TEXT)")
     payload = "x" * payload_bytes
     for start in range(0, ROWS, 500):
@@ -59,7 +59,7 @@ def main() -> None:
     measurements = []
     sort_seconds = 0.0
     for name, payload_bytes in (("narrow", 8), ("wide", 600)):
-        db = build(folder / f"{name}.kdb", payload_bytes)
+        db = build(folder / f"{name}.mvrs", payload_bytes)
         table = db._catalog.get("t")
         rows, pages = table.ensure_stats()
 

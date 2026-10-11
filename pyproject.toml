@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kestreldb"
+name = "mvrs_db"
 version = "0.1.0"
 description = "An educational relational database engine written from scratch in Python."
 readme = "README.md"
@@ -17,10 +17,10 @@ bench = ["matplotlib>=3.8"]
 vector = ["numpy>=2"]
 
 [project.scripts]
-kestrel = "kestreldb.cli:app"
+mvrs_db = "mvrs_db.cli:app"
 
 [tool.setuptools.packages.find]
-include = ["kestreldb*"]
+include = ["mvrs_db*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -40,9 +40,9 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "BLE"]
 
 [tool.ruff.lint.per-file-ignores]
 # The keyword lists read better as whitespace-separated words than as list literals.
-"kestreldb/sql/lexer.py" = ["SIM905"]
+"mvrs_db/sql/lexer.py" = ["SIM905"]
 # typer declares arguments as call expressions in defaults; that is its API.
-"kestreldb/cli.py" = ["B008"]
+"mvrs_db/cli.py" = ["B008"]
 # The scripts import their sibling module after adjusting sys.path, and their
 # lambdas inside loops are called at once, before the loop variable changes.
 "benchmarks/*.py" = ["I001", "B023", "E402"]

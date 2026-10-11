@@ -1,4 +1,4 @@
-# KestrelDB roadmap
+# MVRS_DB roadmap
 
 The working rules and environment rules are in `CLAUDE.md`. This file holds the project vision, the architecture, and the requirements for each phase. Read the relevant phase before starting a milestone.
 
@@ -6,7 +6,7 @@ The working rules and environment rules are in `CLAUDE.md`. This file holds the 
 
 ## Vision
 
-KestrelDB is an educational but technically rigorous persistent relational database engine written in Python. It must implement, by ourselves:
+MVRS_DB is an educational but technically rigorous persistent relational database engine written in Python. It must implement, by ourselves:
 
 * Custom on-disk storage with fixed-size, checksummed pages
 * A buffer pool
@@ -27,7 +27,7 @@ Build in stages. Each stage ends with a working, tested, committed milestone.
 Clear, independently testable modules:
 
 ```
-kestreldb/
+mvrs_db/
   __init__.py
   config.py
   errors.py
@@ -111,7 +111,7 @@ Requirements:
 * Data survives normal restarts.
 * Invalid page IDs, bad magic numbers, unsupported versions, corrupt headers and checksum mismatches raise controlled, specific errors. They never crash or silently return garbage.
 * Page boundaries are checked on every read/write.
-* Opening a file that is not a KestrelDB file is refused without modifying it.
+* Opening a file that is not a MVRS_DB file is refused without modifying it.
 * The buffer pool is tested independently: pinned pages are never evicted; dirty pages are written before eviction; eviction when everything is pinned raises a clear error.
 * Every page modification, including allocation, free-list and file-header updates, goes through one code path, so Phase 4 can add logging in one place.
 
@@ -214,7 +214,7 @@ A small, explainable optimiser: index selection, predicate pushdown, basic table
 
 A reproducible suite measuring: sequential insert throughput, point-lookup latency, range-scan throughput, query latency, index build time, transaction throughput, recovery time, and memory use. Use multiple dataset sizes and repeated runs.
 
-Primary comparisons are internal (these are honest in Python): indexed lookup vs full scan, WAL with `fsync` vs without, different buffer-pool sizes, different page sizes (possible because page size is a creation-time setting). SQLite may be included only for clearly equivalent operations and documented configuration, with a prominent note that SQLite is C and KestrelDB is Python, so absolute numbers are not comparable in spirit.
+Primary comparisons are internal (these are honest in Python): indexed lookup vs full scan, WAL with `fsync` vs without, different buffer-pool sizes, different page sizes (possible because page size is a creation-time setting). SQLite may be included only for clearly equivalent operations and documented configuration, with a prominent note that SQLite is C and MVRS_DB is Python, so absolute numbers are not comparable in spirit.
 
 Every report states: dataset size, hardware, drive type of `W:`, OS, Python version, configuration, whether Windows Defender real-time scanning was active (it distorts file I/O timings), warm vs cold cache, median and tail latency (p95/p99) where useful, throughput, limitations, and known bottlenecks. Never fabricate numbers; include the exact command to reproduce each result.
 
@@ -243,4 +243,4 @@ Start with Phase 0 only: design documents and no implementation code. Inspect th
 
 Then stop. Summarise the design and wait while I review it. Do not write any storage, page, or disk-manager code until I explicitly approve Phase 1. When I approve, Phase 1 begins with milestone 1.1: the page format with checksums, the disk manager, and tests (including corruption-detection tests).
 
-Build KestrelDB as if another engineer will inspect every design decision, test every claim, and challenge every benchmark.
+Build MVRS_DB as if another engineer will inspect every design decision, test every claim, and challenge every benchmark.

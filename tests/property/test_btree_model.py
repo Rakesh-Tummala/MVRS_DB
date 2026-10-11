@@ -6,11 +6,11 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from kestreldb.errors import DuplicateKeyError
-from kestreldb.index.btree import BTree
-from kestreldb.storage.buffer_pool import BufferPool
-from kestreldb.storage.disk_manager import DiskManager
-from kestreldb.storage.heap_file import RecordId
+from mvrs_db.errors import DuplicateKeyError
+from mvrs_db.index.btree import BTree
+from mvrs_db.storage.buffer_pool import BufferPool
+from mvrs_db.storage.disk_manager import DiskManager
+from mvrs_db.storage.heap_file import RecordId
 
 # Short keys from a small alphabet collide often, which exercises duplicate
 # handling, delete-then-reinsert, and keys that are prefixes of each other.
@@ -34,7 +34,7 @@ def test_btree_matches_a_dictionary(
     operations: list[tuple],
     capacity: int,  # type: ignore[type-arg]
 ) -> None:
-    path = tmp_path_factory.mktemp("btree") / "db.kdb"
+    path = tmp_path_factory.mktemp("btree") / "db.mvrs"
     disk = DiskManager.create(path)
     pool = BufferPool(disk, 16)
     root = BTree.create(pool)

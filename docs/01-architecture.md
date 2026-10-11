@@ -2,7 +2,7 @@
 
 ## Layers
 
-KestrelDB is a stack of layers. Each layer talks only to the layer directly below it, so each can be tested alone.
+MVRS_DB is a stack of layers. Each layer talks only to the layer directly below it, so each can be tested alone.
 
 ```
         SQL text
@@ -25,7 +25,7 @@ KestrelDB is a stack of layers. Each layer talks only to the layer directly belo
    |                 |
  storage/disk_manager  recovery/wal    the only two modules that touch files
    |                 |
- name.kdb          name.kdb.wal
+ name.mvrs          name.mvrs.wal
 ```
 
 | Module | Owns | Knows nothing about |

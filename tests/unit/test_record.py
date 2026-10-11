@@ -10,8 +10,8 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from kestreldb.errors import CorruptRecordError, InvalidValueError, RecordTooLargeError
-from kestreldb.storage.record import (
+from mvrs_db.errors import CorruptRecordError, InvalidValueError, RecordTooLargeError
+from mvrs_db.storage.record import (
     INT64_MAX,
     INT64_MIN,
     ColumnType,

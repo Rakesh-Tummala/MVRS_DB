@@ -10,7 +10,7 @@ visible transaction complete, and nothing of any later one.
 
 from __future__ import annotations
 
-import kestreldb
+import mvrs_db
 
 ROWS_PER_TXN = 8
 
@@ -23,13 +23,13 @@ def _body(k: int, j: int) -> str:
 # ---------------------------------------------------------------------- "rows"
 
 
-def rows_setup(db: kestreldb.Database) -> None:
+def rows_setup(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE counter (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)")
     db.execute("INSERT INTO counter VALUES (1, 0)")
     db.execute("CREATE TABLE data (id INTEGER PRIMARY KEY, tag TEXT UNIQUE, body TEXT)")
 
 
-def rows_txn(db: kestreldb.Database, k: int) -> None:
+def rows_txn(db: mvrs_db.Database, k: int) -> None:
     """Inserts, deletes and updates across several pages and two indexes."""
     db.execute("BEGIN")
     for j in range(ROWS_PER_TXN):
@@ -58,7 +58,7 @@ def rows_model(visible: int) -> list[tuple[int, str, str]]:
     return [rows[key] for key in sorted(rows)]
 
 
-def rows_verify(db: kestreldb.Database, visible: int) -> None:
+def rows_verify(db: mvrs_db.Database, visible: int) -> None:
     assert db.execute("SELECT * FROM data ORDER BY id").rows == rows_model(visible)
     assert db.table_names() == ["counter", "data"]
 
@@ -66,12 +66,12 @@ def rows_verify(db: kestreldb.Database, visible: int) -> None:
 # ---------------------------------------------------------------------- "ddl"
 
 
-def ddl_setup(db: kestreldb.Database) -> None:
+def ddl_setup(db: mvrs_db.Database) -> None:
     db.execute("CREATE TABLE counter (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)")
     db.execute("INSERT INTO counter VALUES (1, 0)")
 
 
-def ddl_txn(db: kestreldb.Database, k: int) -> None:
+def ddl_txn(db: mvrs_db.Database, k: int) -> None:
     """Structural changes: create a table, fill it, drop an older one."""
     db.execute("BEGIN")
     db.execute(f"CREATE TABLE t{k} (id INTEGER PRIMARY KEY, v TEXT UNIQUE, body TEXT)")
@@ -83,7 +83,7 @@ def ddl_txn(db: kestreldb.Database, k: int) -> None:
     db.execute("COMMIT")
 
 
-def ddl_verify(db: kestreldb.Database, visible: int) -> None:
+def ddl_verify(db: mvrs_db.Database, visible: int) -> None:
     live = [k for k in (visible - 2, visible - 1) if k >= 0]
     assert db.table_names() == sorted(["counter", *(f"t{k}" for k in live)])
     for k in live:
@@ -97,7 +97,7 @@ SCENARIOS = {
 }
 
 
-def visible_transactions(db: kestreldb.Database) -> int | None:
+def visible_transactions(db: mvrs_db.Database) -> int | None:
     """The counter's value, or None if the crash came before setup finished."""
     if "counter" not in db.table_names():
         return None

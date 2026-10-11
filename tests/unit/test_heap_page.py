@@ -6,9 +6,9 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from kestreldb.errors import CorruptPageError, InvalidRecordIdError, InvalidValueError
-from kestreldb.storage import heap_page
-from kestreldb.storage.page import PageType, new_page
+from mvrs_db.errors import CorruptPageError, InvalidRecordIdError, InvalidValueError
+from mvrs_db.storage import heap_page
+from mvrs_db.storage.page import PageType, new_page
 
 PAGE_SIZE = 4096
 

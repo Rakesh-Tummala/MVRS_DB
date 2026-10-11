@@ -2,7 +2,7 @@
 
 ## In scope
 
-* One database = one data file (`name.kdb`) plus one log file (`name.kdb.wal`, from Phase 4).
+* One database = one data file (`name.mvrs`) plus one log file (`name.mvrs.wal`, from Phase 4).
 * Embedded use: the engine runs inside the calling Python process. One process opens a database at a time.
 * Tables stored as heap files of slotted pages, with a B+ tree index on the primary key and on each `UNIQUE` column.
 * Column types `INTEGER`, `REAL`, `TEXT`, each nullable unless declared otherwise.

@@ -1,6 +1,6 @@
 # Known limitations and future work
 
-What KestrelDB does not do, stated plainly. Each item is a real difference from a production engine.
+What MVRS_DB does not do, stated plainly. Each item is a real difference from a production engine.
 
 ## Not built
 
@@ -33,7 +33,7 @@ What KestrelDB does not do, stated plainly. Each item is a real difference from 
 * Damage in the **middle** of the log ends the log there. Later committed transactions are lost, because a damaged record looks the same as a torn tail.
 * A page that is damaged on disk **after** it was checkpointed cannot be repaired. It is detected by its checksum when read, and by `Database.check()`.
 * The file header and the log header are assumed to be written atomically (each fits in one 512-byte sector).
-* There is no backup tool. Copying the `.kdb` and `.kdb.wal` files together while the database is closed is a valid backup.
+* There is no backup tool. Copying the `.mvrs` and `.mvrs.wal` files together while the database is closed is a valid backup.
 
 ## Performance
 

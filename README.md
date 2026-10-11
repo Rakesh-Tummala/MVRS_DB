@@ -1,4 +1,4 @@
-# KestrelDB
+# MVRS_DB
 
 A small relational database engine written from scratch in Python, built to learn how databases work inside.
 
@@ -35,9 +35,9 @@ On Linux or macOS use `python3 -m venv .venv` and `.venv/bin/python`.
 ## Use it from Python
 
 ```python
-import kestreldb
+import mvrs_db
 
-with kestreldb.connect("shop.kdb") as db:
+with mvrs_db.connect("shop.mvrs") as db:
     db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price REAL)")
     db.execute("INSERT INTO items VALUES (1, 'pen', 1.5), (2, 'book', 12.0), (3, 'lamp', 30.0)")
 
@@ -58,22 +58,22 @@ Give each thread its own connection with `db.connect()`.
 ## Use it from the command line
 
 ```bash
-.venv\Scripts\kestrel.exe shell shop.kdb
+.venv\Scripts\mvrs_db.exe shell shop.mvrs
 ```
 
 ```
-kestrel> SELECT * FROM items WHERE price < 20;
+mvrs_db> SELECT * FROM items WHERE price < 20;
 id | name | price
 ---+------+------
 1  | pen  | 1.5
 2  | book | 12.0
 (2 rows)
-kestrel> .tables
-kestrel> .check
-kestrel> .quit
+mvrs_db> .tables
+mvrs_db> .check
+mvrs_db> .quit
 ```
 
-Other commands: `kestrel exec <file> "<sql>"`, `kestrel info <file>`, `kestrel check <file>`.
+Other commands: `mvrs_db exec <file> "<sql>"`, `mvrs_db info <file>`, `mvrs_db check <file>`.
 
 ## See it recover from a crash
 
@@ -129,7 +129,7 @@ Start with [docs/STUDY-GUIDE.md](docs/STUDY-GUIDE.md), which gives a reading ord
 ## Layout
 
 ```
-kestreldb/
+mvrs_db/
   storage/      pages, records, slotted pages, buffer pool, table storage
   index/        key encoding, B+ tree
   recovery/     write-ahead log, recovery

@@ -1,6 +1,6 @@
 """Isolation between concurrent transactions.
 
-KestrelDB uses strict two-phase locking at table granularity with a single
+MVRS_DB uses strict two-phase locking at table granularity with a single
 writer. These tests run real threads and check that the anomalies this design
 claims to prevent do not happen: dirty reads, lost updates, non-repeatable
 reads, and phantoms. They demonstrate the absence of those anomalies in the
@@ -17,15 +17,15 @@ from pathlib import Path
 
 import pytest
 
-import kestreldb
-from kestreldb.errors import DeadlockError
+import mvrs_db
+from mvrs_db.errors import DeadlockError
 
 WAIT = 0.3  # long enough to tell "blocked" from "slow"
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> Iterator[kestreldb.Database]:
-    database = kestreldb.connect(tmp_path / "iso.kdb", synchronous=False, lock_timeout=20)
+def db(tmp_path: Path) -> Iterator[mvrs_db.Database]:
+    database = mvrs_db.connect(tmp_path / "iso.mvrs", synchronous=False, lock_timeout=20)
     database.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance INTEGER NOT NULL)")
     database.execute("INSERT INTO accounts VALUES (1, 100), (2, 100), (3, 100), (4, 100)")
     database.execute("CREATE TABLE other (id INTEGER PRIMARY KEY, v INTEGER)")
@@ -62,13 +62,13 @@ class Background:
         return self.result
 
 
-def balance(connection: kestreldb.Connection, account: int) -> int:
+def balance(connection: mvrs_db.Connection, account: int) -> int:
     value = connection.execute(f"SELECT balance FROM accounts WHERE id = {account}").rows[0][0]
     assert isinstance(value, int)
     return value
 
 
-def test_no_dirty_read_of_a_change_that_is_rolled_back(db: kestreldb.Database) -> None:
+def test_no_dirty_read_of_a_change_that_is_rolled_back(db: mvrs_db.Database) -> None:
     writer, reader = db.connect(), db.connect()
     writer.execute("BEGIN")
     writer.execute("UPDATE accounts SET balance = 999 WHERE id = 1")
@@ -80,7 +80,7 @@ def test_no_dirty_read_of_a_change_that_is_rolled_back(db: kestreldb.Database) -
     assert read.finish() == 100  # it never saw 999
 
 
-def test_no_dirty_read_of_a_change_that_commits(db: kestreldb.Database) -> None:
+def test_no_dirty_read_of_a_change_that_commits(db: mvrs_db.Database) -> None:
     writer, reader = db.connect(), db.connect()
     writer.execute("BEGIN")
     writer.execute("UPDATE accounts SET balance = 999 WHERE id = 1")
@@ -92,7 +92,7 @@ def test_no_dirty_read_of_a_change_that_commits(db: kestreldb.Database) -> None:
     assert read.finish() == 999
 
 
-def test_repeatable_read(db: kestreldb.Database) -> None:
+def test_repeatable_read(db: mvrs_db.Database) -> None:
     reader, writer = db.connect(), db.connect()
     reader.execute("BEGIN")
     first = balance(reader, 1)
@@ -108,7 +108,7 @@ def test_repeatable_read(db: kestreldb.Database) -> None:
     assert balance(reader, 1) == 0
 
 
-def test_no_phantom_rows(db: kestreldb.Database) -> None:
+def test_no_phantom_rows(db: mvrs_db.Database) -> None:
     reader, writer = db.connect(), db.connect()
     reader.execute("BEGIN")
     count = len(reader.execute("SELECT id FROM accounts WHERE balance >= 100").rows)
@@ -121,7 +121,7 @@ def test_no_phantom_rows(db: kestreldb.Database) -> None:
     assert insert.finish() == 1
 
 
-def test_readers_do_not_block_each_other(db: kestreldb.Database) -> None:
+def test_readers_do_not_block_each_other(db: mvrs_db.Database) -> None:
     first, second = db.connect(), db.connect()
     first.execute("BEGIN")
     second.execute("BEGIN")
@@ -133,7 +133,7 @@ def test_readers_do_not_block_each_other(db: kestreldb.Database) -> None:
     second.execute("COMMIT")
 
 
-def test_reader_of_one_table_is_not_blocked_by_a_writer_of_another(db: kestreldb.Database) -> None:
+def test_reader_of_one_table_is_not_blocked_by_a_writer_of_another(db: mvrs_db.Database) -> None:
     writer, reader = db.connect(), db.connect()
     writer.execute("BEGIN")
     writer.execute("UPDATE other SET v = 2 WHERE id = 1")
@@ -143,7 +143,7 @@ def test_reader_of_one_table_is_not_blocked_by_a_writer_of_another(db: kestreldb
     writer.execute("COMMIT")
 
 
-def test_only_one_writer_at_a_time(db: kestreldb.Database) -> None:
+def test_only_one_writer_at_a_time(db: mvrs_db.Database) -> None:
     first, second = db.connect(), db.connect()
     first.execute("BEGIN")
     first.execute("UPDATE other SET v = 2 WHERE id = 1")
@@ -158,7 +158,7 @@ def test_only_one_writer_at_a_time(db: kestreldb.Database) -> None:
     assert update.finish() == 1
 
 
-def test_deadlock_is_broken_by_rolling_one_transaction_back(db: kestreldb.Database) -> None:
+def test_deadlock_is_broken_by_rolling_one_transaction_back(db: mvrs_db.Database) -> None:
     first, second = db.connect(), db.connect()
     first.execute("BEGIN")
     second.execute("BEGIN")
@@ -176,7 +176,7 @@ def test_deadlock_is_broken_by_rolling_one_transaction_back(db: kestreldb.Databa
     assert balance(second, 1) == 1
 
 
-def test_no_lost_updates(db: kestreldb.Database) -> None:
+def test_no_lost_updates(db: mvrs_db.Database) -> None:
     """Read-modify-write from many threads. Every successful increment must count."""
     threads, increments_each = 6, 15
     succeeded = [0] * threads
@@ -210,7 +210,7 @@ def test_no_lost_updates(db: kestreldb.Database) -> None:
     db.check()
 
 
-def test_money_is_conserved_under_concurrent_transfers(db: kestreldb.Database) -> None:
+def test_money_is_conserved_under_concurrent_transfers(db: mvrs_db.Database) -> None:
     """Writers move money between accounts while readers add up the total."""
     total = 400
     stop = threading.Event()
@@ -269,8 +269,8 @@ def test_money_is_conserved_under_concurrent_transfers(db: kestreldb.Database) -
 
 def test_concurrent_readers_and_a_writer_on_many_tables(tmp_path: Path) -> None:
     """Stress the shared buffer pool: a small pool, several readers, one writer."""
-    with kestreldb.connect(
-        tmp_path / "stress.kdb", buffer_pages=32, synchronous=False, lock_timeout=30
+    with mvrs_db.connect(
+        tmp_path / "stress.mvrs", buffer_pages=32, synchronous=False, lock_timeout=30
     ) as db:
         for name in ("a", "b", "c"):
             db.execute(f"CREATE TABLE {name} (id INTEGER PRIMARY KEY, body TEXT)")

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-import kestreldb
-from kestreldb.errors import (
+import mvrs_db
+from mvrs_db.errors import (
     ConstraintViolationError,
     EngineFailedError,
     SqlSyntaxError,
@@ -21,15 +21,15 @@ from kestreldb.errors import (
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> Iterator[kestreldb.Database]:
-    database = kestreldb.connect(tmp_path / "txn.kdb", synchronous=False)
+def db(tmp_path: Path) -> Iterator[mvrs_db.Database]:
+    database = mvrs_db.connect(tmp_path / "txn.mvrs", synchronous=False)
     database.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT UNIQUE, n INTEGER)")
     database.execute("INSERT INTO t VALUES (1, 'one', 10), (2, 'two', 20), (3, 'three', 30)")
     yield database
     database.close()
 
 
-def rows(db: kestreldb.Database) -> list[tuple[object, ...]]:
+def rows(db: mvrs_db.Database) -> list[tuple[object, ...]]:
     return db.execute("SELECT * FROM t ORDER BY id").rows
 
 
@@ -37,19 +37,19 @@ ORIGINAL = [(1, "one", 10), (2, "two", 20), (3, "three", 30)]
 
 
 def test_commit_makes_changes_permanent(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
-    with kestreldb.connect(path) as db:
+    path = tmp_path / "db.mvrs"
+    with mvrs_db.connect(path) as db:
         db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
         db.execute("BEGIN")
         db.execute("INSERT INTO t VALUES (1, 1), (2, 2)")
         db.execute("UPDATE t SET n = 5 WHERE id = 1")
         db.execute("COMMIT")
 
-    with kestreldb.connect(path) as db:
+    with mvrs_db.connect(path) as db:
         assert db.execute("SELECT * FROM t ORDER BY id").rows == [(1, 5), (2, 2)]
 
 
-def test_rollback_discards_every_kind_of_change(db: kestreldb.Database) -> None:
+def test_rollback_discards_every_kind_of_change(db: mvrs_db.Database) -> None:
     pages_before = db.page_count
 
     db.execute("BEGIN")
@@ -71,7 +71,7 @@ def test_rollback_discards_every_kind_of_change(db: kestreldb.Database) -> None:
     assert len(rows(db)) == 4
 
 
-def test_rollback_of_create_and_drop_table(db: kestreldb.Database) -> None:
+def test_rollback_of_create_and_drop_table(db: mvrs_db.Database) -> None:
     db.execute("BEGIN")
     db.execute("CREATE TABLE fresh (id INTEGER PRIMARY KEY)")
     db.execute("INSERT INTO fresh VALUES (1), (2)")
@@ -86,7 +86,7 @@ def test_rollback_of_create_and_drop_table(db: kestreldb.Database) -> None:
     assert db.check().tables == {"t": 3}
 
 
-def test_committed_create_and_drop_inside_a_transaction(db: kestreldb.Database) -> None:
+def test_committed_create_and_drop_inside_a_transaction(db: mvrs_db.Database) -> None:
     db.execute("BEGIN")
     db.execute("CREATE TABLE fresh (id INTEGER PRIMARY KEY)")
     db.execute("INSERT INTO fresh VALUES (1)")
@@ -97,7 +97,7 @@ def test_committed_create_and_drop_inside_a_transaction(db: kestreldb.Database) 
     assert db.check().tables == {"fresh": 1}
 
 
-def test_rollback_restores_planner_statistics(db: kestreldb.Database) -> None:
+def test_rollback_restores_planner_statistics(db: mvrs_db.Database) -> None:
     def estimated_rows() -> str:
         return db.execute("EXPLAIN SELECT * FROM t").rows[-1][0]
 
@@ -111,7 +111,7 @@ def test_rollback_restores_planner_statistics(db: kestreldb.Database) -> None:
     assert estimated_rows() == before
 
 
-def test_transaction_control_misuse(db: kestreldb.Database) -> None:
+def test_transaction_control_misuse(db: mvrs_db.Database) -> None:
     with pytest.raises(TransactionError, match="no transaction"):
         db.execute("COMMIT")
     with pytest.raises(TransactionError, match="no transaction"):
@@ -122,7 +122,7 @@ def test_transaction_control_misuse(db: kestreldb.Database) -> None:
     db.execute("ROLLBACK")
 
 
-def test_statement_that_fails_midway_aborts_the_whole_transaction(db: kestreldb.Database) -> None:
+def test_statement_that_fails_midway_aborts_the_whole_transaction(db: mvrs_db.Database) -> None:
     connection = db.connect()
     connection.execute("BEGIN")
     connection.execute("INSERT INTO t VALUES (4, 'four', 40)")
@@ -149,7 +149,7 @@ def test_statement_that_fails_midway_aborts_the_whole_transaction(db: kestreldb.
     ],
 )
 def test_statement_that_fails_before_changing_anything_keeps_the_transaction(
-    db: kestreldb.Database, statement: str, error: type[Exception]
+    db: mvrs_db.Database, statement: str, error: type[Exception]
 ) -> None:
     connection = db.connect()
     connection.execute("BEGIN")
@@ -164,7 +164,7 @@ def test_statement_that_fails_before_changing_anything_keeps_the_transaction(
     assert [row[0] for row in rows(db)] == [1, 2, 3, 4, 5]
 
 
-def test_read_only_transaction(db: kestreldb.Database) -> None:
+def test_read_only_transaction(db: mvrs_db.Database) -> None:
     commits = db.commits
     db.execute("BEGIN")
     assert rows(db) == ORIGINAL
@@ -174,14 +174,14 @@ def test_read_only_transaction(db: kestreldb.Database) -> None:
     assert db.commits == commits  # nothing was written to the log
 
 
-def test_empty_write_transaction_logs_nothing(db: kestreldb.Database) -> None:
+def test_empty_write_transaction_logs_nothing(db: mvrs_db.Database) -> None:
     size = db.wal_size
     assert db.execute("DELETE FROM t WHERE id = 999").rowcount == 0
     assert db.execute("UPDATE t SET n = 1 WHERE id = 999").rowcount == 0
     assert db.wal_size == size
 
 
-def test_closing_a_connection_rolls_back_its_transaction(db: kestreldb.Database) -> None:
+def test_closing_a_connection_rolls_back_its_transaction(db: mvrs_db.Database) -> None:
     connection = db.connect()
     connection.execute("BEGIN")
     connection.execute("DELETE FROM t")
@@ -192,22 +192,22 @@ def test_closing_a_connection_rolls_back_its_transaction(db: kestreldb.Database)
 
 
 def test_closing_the_database_rolls_back_open_transactions(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
-    db = kestreldb.connect(path)
+    path = tmp_path / "db.mvrs"
+    db = mvrs_db.connect(path)
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
     db.execute("INSERT INTO t VALUES (1)")
     db.execute("BEGIN")
     db.execute("INSERT INTO t VALUES (2)")
     db.close()
 
-    with kestreldb.connect(path) as db:
+    with mvrs_db.connect(path) as db:
         assert db.execute("SELECT * FROM t").rows == [(1,)]
         db.check()
 
 
 def test_each_statement_outside_a_transaction_commits_on_its_own(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
-    db = kestreldb.connect(path, checkpoint_bytes=1 << 30)
+    path = tmp_path / "db.mvrs"
+    db = mvrs_db.connect(path, checkpoint_bytes=1 << 30)
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
     commits = db.commits
     db.execute("INSERT INTO t VALUES (1)")
@@ -217,7 +217,7 @@ def test_each_statement_outside_a_transaction_commits_on_its_own(tmp_path: Path)
 
 
 def test_transaction_larger_than_the_buffer_pool(tmp_path: Path) -> None:
-    with kestreldb.connect(tmp_path / "db.kdb", buffer_pages=16, synchronous=False) as db:
+    with mvrs_db.connect(tmp_path / "db.mvrs", buffer_pages=16, synchronous=False) as db:
         db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)")
         db.execute("INSERT INTO t VALUES (0, 'kept')")
         connection = db.connect()
@@ -242,8 +242,8 @@ def test_transaction_larger_than_the_buffer_pool(tmp_path: Path) -> None:
 def test_failed_log_write_fails_the_commit_and_stops_further_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / "db.kdb"
-    db = kestreldb.connect(path)
+    path = tmp_path / "db.mvrs"
+    db = mvrs_db.connect(path)
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
     db.execute("INSERT INTO t VALUES (1)")
 
@@ -259,14 +259,14 @@ def test_failed_log_write_fails_the_commit_and_stops_further_writes(
         db.execute("INSERT INTO t VALUES (3)")
     db.close()
 
-    with kestreldb.connect(path) as db:  # reopening clears the failed state
+    with mvrs_db.connect(path) as db:  # reopening clears the failed state
         assert db.execute("SELECT * FROM t").rows == [(1,)]
         db.execute("INSERT INTO t VALUES (2)")
         db.check()
 
 
 def test_checkpoint_empties_the_log(tmp_path: Path) -> None:
-    with kestreldb.connect(tmp_path / "db.kdb", checkpoint_bytes=1 << 30) as db:
+    with mvrs_db.connect(tmp_path / "db.mvrs", checkpoint_bytes=1 << 30) as db:
         db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)")
         for i in range(20):
             db.execute(f"INSERT INTO t VALUES ({i}, '{'x' * 300}')")
@@ -281,9 +281,7 @@ def test_checkpoint_empties_the_log(tmp_path: Path) -> None:
 
 
 def test_automatic_checkpoint_keeps_the_log_bounded(tmp_path: Path) -> None:
-    with kestreldb.connect(
-        tmp_path / "db.kdb", checkpoint_bytes=64 * 1024, synchronous=False
-    ) as db:
+    with mvrs_db.connect(tmp_path / "db.mvrs", checkpoint_bytes=64 * 1024, synchronous=False) as db:
         db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)")
         for i in range(300):
             db.execute(f"INSERT INTO t VALUES ({i}, '{'x' * 300}')")

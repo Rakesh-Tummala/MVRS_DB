@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from kestreldb.errors import (
+from mvrs_db.errors import (
     BufferPoolFullError,
     ChecksumMismatchError,
     InternalError,
@@ -17,9 +17,9 @@ from kestreldb.errors import (
     TransactionError,
     TransactionTooLargeError,
 )
-from kestreldb.storage.buffer_pool import BufferPool
-from kestreldb.storage.disk_manager import DiskManager
-from kestreldb.storage.page import PAGE_HEADER_SIZE, PageType, read_header
+from mvrs_db.storage.buffer_pool import BufferPool
+from mvrs_db.storage.disk_manager import DiskManager
+from mvrs_db.storage.page import PAGE_HEADER_SIZE, PageType, read_header
 
 PAGE_SIZE = 4096
 CAPACITY = 8
@@ -27,7 +27,7 @@ CAPACITY = 8
 
 @pytest.fixture
 def disk(tmp_path: Path) -> Iterator[DiskManager]:
-    manager = DiskManager.create(tmp_path / "db.kdb")
+    manager = DiskManager.create(tmp_path / "db.mvrs")
     yield manager
     manager.close()
 
@@ -198,7 +198,7 @@ def test_failed_write_during_eviction_keeps_the_page_dirty(
 
 
 def test_corrupt_page_does_not_enter_the_pool(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     with DiskManager.create(path) as disk:
         pool = BufferPool(disk, CAPACITY)
         (page_id,) = make_pages(pool, 1)
@@ -215,7 +215,7 @@ def test_corrupt_page_does_not_enter_the_pool(tmp_path: Path) -> None:
 
 
 def test_flush_all_persists_pages_and_header(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     with DiskManager.create(path) as disk:
         pool = BufferPool(disk, CAPACITY)
         ids = make_pages(pool, 5)
@@ -266,7 +266,7 @@ def test_double_free_is_caught(pool: BufferPool) -> None:
 
 
 def test_free_list_survives_reopen(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     with DiskManager.create(path) as disk:
         pool = BufferPool(disk, CAPACITY)
         ids = make_pages(pool, 6)

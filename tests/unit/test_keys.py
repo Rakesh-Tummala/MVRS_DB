@@ -8,9 +8,9 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from kestreldb.errors import InvalidValueError, KeyTooLargeError
-from kestreldb.index.keys import decode_key, encode_key
-from kestreldb.storage.record import INT64_MAX, INT64_MIN, ColumnType
+from mvrs_db.errors import InvalidValueError, KeyTooLargeError
+from mvrs_db.index.keys import decode_key, encode_key
+from mvrs_db.storage.record import INT64_MAX, INT64_MIN, ColumnType
 
 INTEGERS = st.integers(INT64_MIN, INT64_MAX)
 REALS = st.floats(allow_nan=False)

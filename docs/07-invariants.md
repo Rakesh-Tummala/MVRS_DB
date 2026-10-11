@@ -83,7 +83,7 @@ A2 is the "no leaks, no double allocation" check that runs after every crash tes
 
 | Scenario | Detected by | Outcome |
 |---|---|---|
-| File is not a KestrelDB file | Magic | `NotADatabaseError`; file untouched |
+| File is not a MVRS_DB file | Magic | `NotADatabaseError`; file untouched |
 | File header damaged | Header CRC | `CorruptHeaderError`; file untouched |
 | Created by a newer version | `format_version` | `UnsupportedVersionError` |
 | File truncated or has a partial page | F1 | `CorruptFileError` |
@@ -106,8 +106,8 @@ A2 is the "no leaks, no double allocation" check that runs after every crash tes
 | Transaction changes more pages than the pool holds | Buffer pool | `TransactionTooLargeError`; rolled back |
 | Two transactions wait for each other | Waits-for graph | `DeadlockError` for one of them; rolled back |
 
-Every error class derives from `KestrelError` in `errors.py`.
+Every error class derives from `MvrsDbError` in `errors.py`.
 
 ## Checking everything at once
 
-`Database.check()` (also `kestrel check <file>`) verifies, for the whole database: P1–P3 for every page, H1–H6 for every heap, T1–T6 and T8 for every index, C1–C4, A1 and A2. It raises the first violation it finds. Every crash test and both model-based tests end by calling it.
+`Database.check()` (also `mvrs_db check <file>`) verifies, for the whole database: P1–P3 for every page, H1–H6 for every heap, T1–T6 and T8 for every index, C1–C4, A1 and A2. It raises the first violation it finds. Every crash test and both model-based tests end by calling it.

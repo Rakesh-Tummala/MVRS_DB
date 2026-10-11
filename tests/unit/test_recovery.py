@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from kestreldb.errors import ChecksumMismatchError, CorruptWalError, WalMismatchError
-from kestreldb.recovery.recovery_manager import recover
-from kestreldb.recovery.wal import RecordType, WalWriter
-from kestreldb.storage.disk_manager import DiskManager
-from kestreldb.storage.page import PAGE_HEADER_SIZE, PageType, new_page, page_lsn, set_page_lsn
+from mvrs_db.errors import ChecksumMismatchError, CorruptWalError, WalMismatchError
+from mvrs_db.recovery.recovery_manager import recover
+from mvrs_db.recovery.wal import RecordType, WalWriter
+from mvrs_db.storage.disk_manager import DiskManager
+from mvrs_db.storage.page import PAGE_HEADER_SIZE, PageType, new_page, page_lsn, set_page_lsn
 
 PAGE_SIZE = 4096
 
@@ -58,9 +58,9 @@ def fill_of(disk: DiskManager, page_id: int) -> int:
 
 
 def test_no_log_means_nothing_to_do(tmp_path: Path) -> None:
-    disk = make_db(tmp_path / "db.kdb")
+    disk = make_db(tmp_path / "db.mvrs")
 
-    stats = recover(disk, tmp_path / "db.kdb.wal")
+    stats = recover(disk, tmp_path / "db.mvrs.wal")
 
     assert stats.records_scanned == 0
     assert stats.pages_restored == 0
@@ -68,8 +68,8 @@ def test_no_log_means_nothing_to_do(tmp_path: Path) -> None:
 
 
 def test_committed_changes_are_redone_and_uncommitted_ones_ignored(tmp_path: Path) -> None:
-    disk = make_db(tmp_path / "db.kdb")
-    log = Log(tmp_path / "db.kdb.wal", disk)
+    disk = make_db(tmp_path / "db.mvrs")
+    log = Log(tmp_path / "db.mvrs.wal", disk)
     log.page(1, 1, 0xAA)
     log.commit(1)
     log.page(2, 2, 0xBB)  # transaction 2 never commits
@@ -77,7 +77,7 @@ def test_committed_changes_are_redone_and_uncommitted_ones_ignored(tmp_path: Pat
     log.commit(3)
     log.done()
 
-    stats = recover(disk, tmp_path / "db.kdb.wal")
+    stats = recover(disk, tmp_path / "db.mvrs.wal")
 
     assert [fill_of(disk, p) for p in (1, 2, 3)] == [0xAA, 0x00, 0xCC]
     assert stats.committed_transactions == 2
@@ -87,8 +87,8 @@ def test_committed_changes_are_redone_and_uncommitted_ones_ignored(tmp_path: Pat
 
 
 def test_the_newest_committed_image_of_a_page_wins(tmp_path: Path) -> None:
-    disk = make_db(tmp_path / "db.kdb")
-    log = Log(tmp_path / "db.kdb.wal", disk)
+    disk = make_db(tmp_path / "db.mvrs")
+    log = Log(tmp_path / "db.mvrs.wal", disk)
     log.page(1, 1, 0x11)
     log.commit(1)
     newest = log.page(2, 1, 0x22)
@@ -96,7 +96,7 @@ def test_the_newest_committed_image_of_a_page_wins(tmp_path: Path) -> None:
     log.page(3, 1, 0x33)  # newer still, but not committed
     log.done()
 
-    recover(disk, tmp_path / "db.kdb.wal")
+    recover(disk, tmp_path / "db.mvrs.wal")
 
     assert fill_of(disk, 1) == 0x22
     assert page_lsn(disk.read_page(1)) == newest
@@ -104,8 +104,8 @@ def test_the_newest_committed_image_of_a_page_wins(tmp_path: Path) -> None:
 
 
 def test_commit_record_must_be_inside_the_valid_log(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb.wal"
-    disk = make_db(tmp_path / "db.kdb")
+    path = tmp_path / "db.mvrs.wal"
+    disk = make_db(tmp_path / "db.mvrs")
     log = Log(path, disk)
     log.page(1, 1, 0xAA)
     log.commit(1)
@@ -121,8 +121,8 @@ def test_commit_record_must_be_inside_the_valid_log(tmp_path: Path) -> None:
 
 
 def test_pages_already_up_to_date_are_left_alone(tmp_path: Path) -> None:
-    disk = make_db(tmp_path / "db.kdb")
-    log = Log(tmp_path / "db.kdb.wal", disk)
+    disk = make_db(tmp_path / "db.mvrs")
+    log = Log(tmp_path / "db.mvrs.wal", disk)
     lsn = log.page(1, 1, 0xAA)
     log.page(1, 2, 0xBB)
     log.commit(1)
@@ -133,7 +133,7 @@ def test_pages_already_up_to_date_are_left_alone(tmp_path: Path) -> None:
     set_page_lsn(flushed, lsn)
     disk.write_page(1, flushed)
 
-    stats = recover(disk, tmp_path / "db.kdb.wal")
+    stats = recover(disk, tmp_path / "db.mvrs.wal")
 
     assert fill_of(disk, 1) == 0x77
     assert fill_of(disk, 2) == 0xBB
@@ -142,9 +142,9 @@ def test_pages_already_up_to_date_are_left_alone(tmp_path: Path) -> None:
 
 
 def test_torn_page_is_restored_from_its_image(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     disk = make_db(path)
-    log = Log(tmp_path / "db.kdb.wal", disk)
+    log = Log(tmp_path / "db.mvrs.wal", disk)
     lsn = log.page(1, 2, 0xAA)
     log.commit(1)
     log.done()
@@ -161,7 +161,7 @@ def test_torn_page_is_restored_from_its_image(tmp_path: Path) -> None:
     with pytest.raises(ChecksumMismatchError):
         disk.read_page(2)
 
-    stats = recover(disk, tmp_path / "db.kdb.wal")
+    stats = recover(disk, tmp_path / "db.mvrs.wal")
 
     assert fill_of(disk, 2) == 0xAA
     assert bytes(disk.read_page(2)[-10:]) == b"\xaa" * 10
@@ -170,8 +170,8 @@ def test_torn_page_is_restored_from_its_image(tmp_path: Path) -> None:
 
 
 def test_logged_header_extends_the_file(tmp_path: Path) -> None:
-    disk = make_db(tmp_path / "db.kdb", pages=1)
-    log = Log(tmp_path / "db.kdb.wal", disk)
+    disk = make_db(tmp_path / "db.mvrs", pages=1)
+    log = Log(tmp_path / "db.mvrs.wal", disk)
     grown = replace(disk.header, page_count=4, free_list_head=0)
     log.wal.append(RecordType.HEADER, 1, grown.pack())
     log.page(1, 2, 0xAA)
@@ -179,7 +179,7 @@ def test_logged_header_extends_the_file(tmp_path: Path) -> None:
     log.commit(1)
     log.done()
 
-    recover(disk, tmp_path / "db.kdb.wal")
+    recover(disk, tmp_path / "db.mvrs.wal")
     disk.flush_header()
 
     assert disk.page_count == 4
@@ -189,30 +189,30 @@ def test_logged_header_extends_the_file(tmp_path: Path) -> None:
 
 
 def test_uncommitted_header_is_ignored(tmp_path: Path) -> None:
-    disk = make_db(tmp_path / "db.kdb", pages=1)
-    log = Log(tmp_path / "db.kdb.wal", disk)
+    disk = make_db(tmp_path / "db.mvrs", pages=1)
+    log = Log(tmp_path / "db.mvrs.wal", disk)
     log.wal.append(RecordType.HEADER, 1, replace(disk.header, page_count=9).pack())
     log.done()
 
-    recover(disk, tmp_path / "db.kdb.wal")
+    recover(disk, tmp_path / "db.mvrs.wal")
 
     assert disk.page_count == 2
     disk.close()
 
 
 def test_recovery_is_idempotent(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     disk = make_db(path)
-    log = Log(tmp_path / "db.kdb.wal", disk)
+    log = Log(tmp_path / "db.mvrs.wal", disk)
     log.page(1, 1, 0xAA)
     log.page(1, 3, 0xCC)
     log.commit(1)
     log.done()
 
-    first = recover(disk, tmp_path / "db.kdb.wal")
+    first = recover(disk, tmp_path / "db.mvrs.wal")
     disk.sync()
     after_first = path.read_bytes()
-    second = recover(disk, tmp_path / "db.kdb.wal")
+    second = recover(disk, tmp_path / "db.mvrs.wal")
     disk.sync()
 
     assert path.read_bytes() == after_first
@@ -222,15 +222,15 @@ def test_recovery_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_log_from_another_database_is_refused(tmp_path: Path) -> None:
-    disk = make_db(tmp_path / "db.kdb")
-    other = make_db(tmp_path / "other.kdb")
-    log = Log(tmp_path / "db.kdb.wal", other)
+    disk = make_db(tmp_path / "db.mvrs")
+    other = make_db(tmp_path / "other.mvrs")
+    log = Log(tmp_path / "db.mvrs.wal", other)
     log.page(1, 1, 0xAA)
     log.commit(1)
     log.done()
 
     with pytest.raises(WalMismatchError):
-        recover(disk, tmp_path / "db.kdb.wal")
+        recover(disk, tmp_path / "db.mvrs.wal")
 
     assert fill_of(disk, 1) == 0x00
     disk.close()
@@ -238,24 +238,24 @@ def test_log_from_another_database_is_refused(tmp_path: Path) -> None:
 
 
 def test_image_for_a_page_outside_the_file_is_refused(tmp_path: Path) -> None:
-    disk = make_db(tmp_path / "db.kdb")
-    log = Log(tmp_path / "db.kdb.wal", disk)
+    disk = make_db(tmp_path / "db.mvrs")
+    log = Log(tmp_path / "db.mvrs.wal", disk)
     log.page(1, 50, 0xAA)
     log.commit(1)
     log.done()
 
     with pytest.raises(CorruptWalError):
-        recover(disk, tmp_path / "db.kdb.wal")
+        recover(disk, tmp_path / "db.mvrs.wal")
     disk.close()
 
 
 def test_image_with_the_wrong_size_is_refused(tmp_path: Path) -> None:
-    disk = make_db(tmp_path / "db.kdb")
-    log = Log(tmp_path / "db.kdb.wal", disk)
+    disk = make_db(tmp_path / "db.mvrs")
+    log = Log(tmp_path / "db.mvrs.wal", disk)
     log.wal.append(RecordType.PAGE_IMAGE, 1, struct.pack("<I", 1) + b"short")
     log.commit(1)
     log.done()
 
     with pytest.raises(CorruptWalError):
-        recover(disk, tmp_path / "db.kdb.wal")
+        recover(disk, tmp_path / "db.mvrs.wal")
     disk.close()

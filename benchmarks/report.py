@@ -112,16 +112,16 @@ def render(results: dict[str, Any], images: list[str]) -> str:
     parts: list[str] = []
     add = parts.append
 
-    add("# KestrelDB benchmark report\n")
+    add("# MVRS_DB benchmark report\n")
     add(
         f"Generated {results['generated']} by `python benchmarks/run_benchmarks.py` "
-        f"(KestrelDB {results['kestreldb_version']}). Every number below was measured in "
+        f"(MVRS_DB {results['mvrs_db_version']}). Every number below was measured in "
         "that run and is stored in `results.json` next to this file.\n"
     )
 
     add("## Read this first\n")
     add(
-        "- **KestrelDB is written in Python.** It is one to three orders of magnitude slower "
+        "- **MVRS_DB is written in Python.** It is one to three orders of magnitude slower "
         "than engines written in C. The comparisons that mean something here are *internal*: "
         "the same engine with and without an index, with and without fsync, with different "
         "buffer pool and page sizes.\n"
@@ -473,20 +473,20 @@ def render(results: dict[str, Any], images: list[str]) -> str:
     sq = results["sqlite"]
     add("## 11. SQLite, for scale only\n")
     add(
-        f"> **SQLite {sq['sqlite_version']} is written in C. KestrelDB is written in "
+        f"> **SQLite {sq['sqlite_version']} is written in C. MVRS_DB is written in "
         "Python.** These numbers show the size of that gap. They are not a contest, and "
-        "nothing here suggests KestrelDB could replace SQLite.\n"
+        "nothing here suggests MVRS_DB could replace SQLite.\n"
     )
     add(
         f"Identical SQL statements, {num(sq['rows'])} rows, one transaction per 500-row "
-        "`INSERT`, no fsync on either side (KestrelDB `synchronous=False`; SQLite "
+        "`INSERT`, no fsync on either side (MVRS_DB `synchronous=False`; SQLite "
         "`PRAGMA synchronous=OFF` with its default rollback journal), then 2,000 primary-key "
         "lookups and a full scan.\n"
     )
-    k, s = sq["kestreldb"], sq["sqlite"]
+    k, s = sq["mvrs_db"], sq["sqlite"]
     add(
         table(
-            ["Operation", "KestrelDB", "SQLite", "SQLite is faster by"],
+            ["Operation", "MVRS_DB", "SQLite", "SQLite is faster by"],
             [
                 [
                     "Insert, rows/second",

@@ -1,6 +1,6 @@
 # 04 — Buffer pool
 
-Code: `kestreldb/storage/buffer_pool.py`. Tests: `tests/unit/test_buffer_pool.py`.
+Code: `mvrs_db/storage/buffer_pool.py`. Tests: `tests/unit/test_buffer_pool.py`.
 
 ## Why it exists
 

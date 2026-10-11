@@ -1,4 +1,4 @@
-"""KestrelDB demo: create, populate, query, reopen, crash mid-transaction, recover.
+"""MVRS_DB demo: create, populate, query, reopen, crash mid-transaction, recover.
 
     python examples/demo.py
 
@@ -14,10 +14,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-import kestreldb
+import mvrs_db
 
 
-def show(db: kestreldb.Database, sql: str) -> None:
+def show(db: mvrs_db.Database, sql: str) -> None:
     print(f"\n> {sql}")
     result = db.execute(sql)
     for row in result.rows:
@@ -28,7 +28,7 @@ def show(db: kestreldb.Database, sql: str) -> None:
 
 def crashing_child(path: str) -> None:
     """Runs in the child: one committed transfer, then a crash in the middle of another."""
-    db = kestreldb.connect(path)
+    db = mvrs_db.connect(path)
     db.execute("BEGIN")
     db.execute("UPDATE accounts SET balance = 400 WHERE id = 1")
     db.execute("UPDATE accounts SET balance = 600 WHERE id = 2")
@@ -47,12 +47,12 @@ def main() -> None:
         crashing_child(sys.argv[2])
         return
 
-    folder = Path(tempfile.mkdtemp(prefix="kestrel-demo-", dir=Path(__file__).parent))
-    path = folder / "bank.kdb"
+    folder = Path(tempfile.mkdtemp(prefix="mvrs_db-demo-", dir=Path(__file__).parent))
+    path = folder / "bank.mvrs"
     print(f"database file: {path}")
 
     print("\n=== 1. create and populate ===")
-    db = kestreldb.connect(path)
+    db = mvrs_db.connect(path)
     show(db, "CREATE TABLE accounts (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, balance INTEGER)")
     show(db, "INSERT INTO accounts VALUES (1, 'asha', 500), (2, 'ravi', 500), (3, 'mei', 250)")
 
@@ -64,7 +64,7 @@ def main() -> None:
     print("\n=== 3. constraints and rollback ===")
     try:
         db.execute("INSERT INTO accounts VALUES (1, 'duplicate', 0)")
-    except kestreldb.KestrelError as exc:
+    except mvrs_db.MvrsDbError as exc:
         print(f"\n> INSERT with an existing id\n    refused: {exc}")
     show(db, "BEGIN")
     show(db, "DELETE FROM accounts")
@@ -73,7 +73,7 @@ def main() -> None:
 
     print("\n=== 4. close and reopen ===")
     db.close()
-    db = kestreldb.connect(path)
+    db = mvrs_db.connect(path)
     show(db, "SELECT * FROM accounts ORDER BY id")
     db.close()
 
@@ -82,7 +82,7 @@ def main() -> None:
     subprocess.run([sys.executable, __file__, "--crash", str(path)], check=False)
 
     print("\n=== 6. reopen: recovery runs automatically ===")
-    db = kestreldb.connect(path)
+    db = mvrs_db.connect(path)
     stats = db.recovery
     print(
         f"    recovery replayed {stats.committed_transactions} committed transaction(s) "

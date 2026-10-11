@@ -18,7 +18,7 @@ The first 64 bytes are the header. The rest of page 0 is zero. The header is rea
 
 | Offset | Size | Field | Notes |
 |---|---|---|---|
-| 0 | 8 | `magic` | `b"KESTREL\0"` |
+| 0 | 8 | `magic` | `b"MVRS_DB\0"` |
 | 8 | 2 | `format_version` | 1 |
 | 10 | 2 | reserved | 0 |
 | 12 | 4 | `page_size` | 4096, 8192, 16384 or 32768 |

@@ -1,4 +1,4 @@
-"""KestrelDB benchmark suite.
+"""MVRS_DB benchmark suite.
 
     python benchmarks/run_benchmarks.py                 run everything, write the report
     python benchmarks/run_benchmarks.py --only lookup   run one section
@@ -27,11 +27,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import kestreldb
+import mvrs_db
 from common import RESULTS_DIR, environment, scratch_dir, summarize
-from kestreldb.execution import expressions
-from kestreldb.execution.operators import Filter, IndexScan, KeyRange, Operator, SeqScan
-from kestreldb.sql.parser import parse
+from mvrs_db.execution import expressions
+from mvrs_db.execution.operators import Filter, IndexScan, KeyRange, Operator, SeqScan
+from mvrs_db.sql.parser import parse
 
 CREATE = "CREATE TABLE items (id INTEGER PRIMARY KEY, grp INTEGER, payload TEXT)"
 CREATE_TWO_INDEXES = (
@@ -49,7 +49,7 @@ def insert_statement(start: int, stop: int, *, with_code: bool = False) -> str:
     return "INSERT INTO items VALUES " + ", ".join(rows)
 
 
-def load(db: kestreldb.Database, rows: int, *, with_code: bool = False) -> float:
+def load(db: mvrs_db.Database, rows: int, *, with_code: bool = False) -> float:
     """Create and fill the table. Returns seconds for the inserts only."""
     db.execute(CREATE_TWO_INDEXES if with_code else CREATE)
     started = time.perf_counter()
@@ -64,7 +64,7 @@ def timed(run: Callable[[], Any]) -> float:
     return time.perf_counter() - started
 
 
-def per_call(db: kestreldb.Database, statements: list[str]) -> list[float]:
+def per_call(db: mvrs_db.Database, statements: list[str]) -> list[float]:
     times = []
     execute = db.execute
     for statement in statements:
@@ -86,7 +86,7 @@ def bench_load(sizes: list[int]) -> list[dict[str, Any]]:
     out = []
     for rows in sizes:
         folder = scratch_dir(f"load-{rows}")
-        with kestreldb.connect(folder / "db.kdb", synchronous=False) as db:
+        with mvrs_db.connect(folder / "db.mvrs", synchronous=False) as db:
             seconds = load(db, rows)
             pages = db.page_count
         out.append(
@@ -94,7 +94,7 @@ def bench_load(sizes: list[int]) -> list[dict[str, Any]]:
                 "rows": rows,
                 "seconds": seconds,
                 "rows_per_second": rows / seconds,
-                "file_bytes": (folder / "db.kdb").stat().st_size,
+                "file_bytes": (folder / "db.mvrs").stat().st_size,
                 "pages": pages,
             }
         )
@@ -107,7 +107,7 @@ def bench_lookup(sizes: list[int]) -> list[dict[str, Any]]:
     rng = random.Random(1)
     for rows in sizes:
         folder = scratch_dir(f"lookup-{rows}")
-        db = kestreldb.connect(folder / "db.kdb", synchronous=False, buffer_pages=16384)
+        db = mvrs_db.connect(folder / "db.mvrs", synchronous=False, buffer_pages=16384)
         load(db, rows)
         keys = [rng.randrange(rows) for _ in range(2000)]
         by_index = [f"SELECT * FROM items WHERE id = {k}" for k in keys]
@@ -117,7 +117,7 @@ def bench_lookup(sizes: list[int]) -> list[dict[str, Any]]:
         scan = summarize(per_call(db, by_scan))
         db.close()
 
-        db = kestreldb.connect(folder / "db.kdb", synchronous=False, buffer_pages=16384)
+        db = mvrs_db.connect(folder / "db.mvrs", synchronous=False, buffer_pages=16384)
         cold = summarize(per_call(db, by_index))  # buffer pool empty; OS cache still warm
         parse_only = summarize([timed(lambda s=s: parse(s)) for s in by_index[:500]])
         db.close()
@@ -138,7 +138,7 @@ def bench_range(rows: int) -> dict[str, Any]:
     """Rows per second for a full scan and for index range scans of different widths."""
     folder = scratch_dir("range")
     out: dict[str, Any] = {"rows": rows, "ranges": []}
-    with kestreldb.connect(folder / "db.kdb", synchronous=False, buffer_pages=16384) as db:
+    with mvrs_db.connect(folder / "db.mvrs", synchronous=False, buffer_pages=16384) as db:
         load(db, rows)
         seconds = median_of(lambda: db.execute("SELECT * FROM items"))
         out["full_scan_rows_per_second"] = rows / seconds
@@ -178,7 +178,7 @@ def bench_commit(transactions: int) -> list[dict[str, Any]]:
     ]
     for label, synchronous, rows_per_txn in configs:
         folder = scratch_dir("commit")
-        with kestreldb.connect(folder / "db.kdb", synchronous=synchronous) as db:
+        with mvrs_db.connect(folder / "db.mvrs", synchronous=synchronous) as db:
             db.execute(CREATE)
             count = transactions if rows_per_txn == 1 else max(transactions // 10, 20)
             statements = [
@@ -201,14 +201,14 @@ def bench_commit(transactions: int) -> list[dict[str, Any]]:
 def bench_buffer_pool(rows: int) -> list[dict[str, Any]]:
     """The same random lookups with different buffer pool sizes."""
     folder = scratch_dir("pool")
-    with kestreldb.connect(folder / "db.kdb", synchronous=False, buffer_pages=16384) as db:
+    with mvrs_db.connect(folder / "db.mvrs", synchronous=False, buffer_pages=16384) as db:
         load(db, rows)
         pages = db.page_count
     rng = random.Random(2)
     statements = [f"SELECT * FROM items WHERE id = {rng.randrange(rows)}" for _ in range(3000)]
     out = []
     for frames in (16, 64, 256, 1024, 4096):
-        with kestreldb.connect(folder / "db.kdb", synchronous=False, buffer_pages=frames) as db:
+        with mvrs_db.connect(folder / "db.mvrs", synchronous=False, buffer_pages=frames) as db:
             per_call(db, statements[:500])
             stats = db.pool.stats
             hits, misses = stats.hits, stats.misses
@@ -232,8 +232,8 @@ def bench_page_size(rows: int) -> list[dict[str, Any]]:
     statements = [f"SELECT * FROM items WHERE id = {rng.randrange(rows)}" for _ in range(2000)]
     for page_size in (4096, 8192, 16384, 32768):
         folder = scratch_dir(f"page-{page_size}")
-        with kestreldb.connect(
-            folder / "db.kdb", synchronous=False, page_size=page_size, buffer_pages=4096
+        with mvrs_db.connect(
+            folder / "db.mvrs", synchronous=False, page_size=page_size, buffer_pages=4096
         ) as db:
             seconds = load(db, rows)
             per_call(db, statements[:200])
@@ -246,7 +246,7 @@ def bench_page_size(rows: int) -> list[dict[str, Any]]:
             {
                 "page_size": page_size,
                 "load_rows_per_second": rows / seconds,
-                "file_bytes": (folder / "db.kdb").stat().st_size,
+                "file_bytes": (folder / "db.mvrs").stat().st_size,
                 "pages": pages,
                 "index_height": height,
                 "lookup": lookups,
@@ -261,7 +261,7 @@ def bench_index_maintenance(rows: int) -> list[dict[str, Any]]:
     out = []
     for label, with_code in (("primary key only", False), ("primary key + unique text", True)):
         folder = scratch_dir("indexes")
-        with kestreldb.connect(folder / "db.kdb", synchronous=False) as db:
+        with mvrs_db.connect(folder / "db.mvrs", synchronous=False) as db:
             seconds = load(db, rows, with_code=with_code)
         out.append({"indexes": label, "rows": rows, "rows_per_second": rows / seconds})
     return out
@@ -276,24 +276,24 @@ def bench_recovery(commit_counts: list[int]) -> list[dict[str, Any]]:
     out = []
     for commits in commit_counts:
         folder = scratch_dir(f"recovery-{commits}")
-        db = kestreldb.connect(folder / "db.kdb", synchronous=False, checkpoint_bytes=1 << 40)
+        db = mvrs_db.connect(folder / "db.mvrs", synchronous=False, checkpoint_bytes=1 << 40)
         db.execute(CREATE)
         for i in range(commits):
             db.execute(insert_statement(i * 10, (i + 1) * 10))
         crashed = folder / "crashed"
         crashed.mkdir()
-        shutil.copy(folder / "db.kdb", crashed / "db.kdb")
-        shutil.copy(folder / "db.kdb.wal", crashed / "db.kdb.wal")
-        log_bytes = (crashed / "db.kdb.wal").stat().st_size
+        shutil.copy(folder / "db.mvrs", crashed / "db.mvrs")
+        shutil.copy(folder / "db.mvrs.wal", crashed / "db.mvrs.wal")
+        log_bytes = (crashed / "db.mvrs.wal").stat().st_size
         db.close()
 
         started = time.perf_counter()
-        recovered = kestreldb.connect(crashed / "db.kdb")
+        recovered = mvrs_db.connect(crashed / "db.mvrs")
         seconds = time.perf_counter() - started
         stats = recovered.recovery
         assert recovered.check().tables == {"items": commits * 10}
         recovered.close()
-        clean_open = timed(lambda: kestreldb.connect(crashed / "db.kdb").close())
+        clean_open = timed(lambda: mvrs_db.connect(crashed / "db.mvrs").close())
         out.append(
             {
                 "commits": commits,
@@ -313,7 +313,7 @@ def bench_memory(rows: int) -> list[dict[str, Any]]:
     for frames in (64, 1024, 8192):
         folder = scratch_dir("memory")
         tracemalloc.start()
-        db = kestreldb.connect(folder / "db.kdb", synchronous=False, buffer_pages=frames)
+        db = mvrs_db.connect(folder / "db.mvrs", synchronous=False, buffer_pages=frames)
         load(db, rows)
         _, load_peak = tracemalloc.get_traced_memory()
         tracemalloc.reset_peak()
@@ -342,7 +342,7 @@ def bench_crossover(rows: int) -> dict[str, Any]:
     """
     folder = scratch_dir("crossover")
     out: dict[str, Any] = {"rows": rows, "points": []}
-    with kestreldb.connect(folder / "db.kdb", synchronous=False, buffer_pages=16384) as db:
+    with mvrs_db.connect(folder / "db.mvrs", synchronous=False, buffer_pages=16384) as db:
         load(db, rows)
         table = db._catalog.get("items")
         for fraction in (0.001, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0):
@@ -375,10 +375,10 @@ def bench_crossover(rows: int) -> dict[str, Any]:
 
 
 def bench_sqlite(rows: int) -> dict[str, Any]:
-    """The same SQL statements against SQLite (C) and KestrelDB (Python).
+    """The same SQL statements against SQLite (C) and MVRS_DB (Python).
 
     Both: one transaction per 500-row INSERT statement, no fsync at commit
-    (KestrelDB synchronous=False; SQLite PRAGMA synchronous=OFF, default
+    (MVRS_DB synchronous=False; SQLite PRAGMA synchronous=OFF, default
     rollback journal), then 2000 point lookups by primary key and a full scan.
     """
     rng = random.Random(4)
@@ -404,13 +404,13 @@ def bench_sqlite(rows: int) -> dict[str, Any]:
         "full_scan_ms": scan * 1e3,
     }
 
-    with kestreldb.connect(folder / "db.kdb", synchronous=False, buffer_pages=16384) as db:
+    with mvrs_db.connect(folder / "db.mvrs", synchronous=False, buffer_pages=16384) as db:
         db.execute(CREATE)
         seconds = timed(lambda: [db.execute(s) for s in inserts])
         per_call(db, lookups[:200])
         lookup = summarize(per_call(db, lookups))
         scan = median_of(lambda: db.execute("SELECT * FROM items"))
-    out["kestreldb"] = {
+    out["mvrs_db"] = {
         "load_rows_per_second": rows / seconds,
         "lookup": lookup,
         "full_scan_ms": scan * 1e3,
@@ -447,7 +447,7 @@ def main() -> None:
     results["environment"] = environment()
     results["generated"] = datetime.now().isoformat(timespec="seconds")
     results["quick"] = args.quick
-    results["kestreldb_version"] = kestreldb.__version__
+    results["mvrs_db_version"] = mvrs_db.__version__
 
     for name in args.only or list(SECTIONS):
         print(f"running {name} ...", flush=True)

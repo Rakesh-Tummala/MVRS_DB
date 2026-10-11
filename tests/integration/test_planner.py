@@ -6,14 +6,14 @@ from collections.abc import Iterator
 
 import pytest
 
-import kestreldb
+import mvrs_db
 
 ROWS = 4000
 
 
 @pytest.fixture(scope="module")
-def db(tmp_path_factory: pytest.TempPathFactory) -> Iterator[kestreldb.Database]:
-    database = kestreldb.connect(tmp_path_factory.mktemp("plan") / "plan.kdb", synchronous=False)
+def db(tmp_path_factory: pytest.TempPathFactory) -> Iterator[mvrs_db.Database]:
+    database = mvrs_db.connect(tmp_path_factory.mktemp("plan") / "plan.mvrs", synchronous=False)
     database.execute(
         "CREATE TABLE items (id INTEGER PRIMARY KEY, code TEXT UNIQUE, grp INTEGER, "
         "price REAL, note TEXT)"
@@ -29,27 +29,27 @@ def db(tmp_path_factory: pytest.TempPathFactory) -> Iterator[kestreldb.Database]
     database.close()
 
 
-def plan(db: kestreldb.Database, sql: str) -> str:
+def plan(db: mvrs_db.Database, sql: str) -> str:
     return "\n".join(row[0] for row in db.execute(f"EXPLAIN {sql}").rows)
 
 
-def test_point_lookup_uses_the_primary_key_index(db: kestreldb.Database) -> None:
+def test_point_lookup_uses_the_primary_key_index(db: mvrs_db.Database) -> None:
     text = plan(db, "SELECT * FROM items WHERE id = 1234")
     assert "IndexScan(items.id: id = 1234)" in text
     assert "SeqScan" not in text
 
 
-def test_lookup_on_a_unique_column_uses_its_index(db: kestreldb.Database) -> None:
+def test_lookup_on_a_unique_column_uses_its_index(db: mvrs_db.Database) -> None:
     assert "IndexScan(items.code: code = 'c00123')" in plan(
         db, "SELECT * FROM items WHERE code = 'c00123'"
     )
 
 
-def test_literal_on_the_left_is_recognised(db: kestreldb.Database) -> None:
+def test_literal_on_the_left_is_recognised(db: mvrs_db.Database) -> None:
     assert "IndexScan(items.id: id > 3990)" in plan(db, "SELECT * FROM items WHERE 3990 < id")
 
 
-def test_narrow_range_uses_the_index_and_wide_range_scans(db: kestreldb.Database) -> None:
+def test_narrow_range_uses_the_index_and_wide_range_scans(db: mvrs_db.Database) -> None:
     narrow = plan(db, "SELECT * FROM items WHERE id >= 100 AND id < 120")
     wide = plan(db, "SELECT * FROM items WHERE id >= 100")
 
@@ -57,49 +57,49 @@ def test_narrow_range_uses_the_index_and_wide_range_scans(db: kestreldb.Database
     assert "SeqScan(items)" in wide  # most of the table matches, so the index would cost more
 
 
-def test_bounds_from_several_conditions_are_combined(db: kestreldb.Database) -> None:
+def test_bounds_from_several_conditions_are_combined(db: mvrs_db.Database) -> None:
     text = plan(db, "SELECT * FROM items WHERE id > 10 AND id >= 50 AND id < 70 AND id <= 90")
     assert "IndexScan(items.id: id >= 50 AND id < 70)" in text
 
 
-def test_unindexed_column_always_scans(db: kestreldb.Database) -> None:
+def test_unindexed_column_always_scans(db: mvrs_db.Database) -> None:
     assert "SeqScan(items)" in plan(db, "SELECT * FROM items WHERE grp = 3")
 
 
-def test_or_cannot_use_an_index(db: kestreldb.Database) -> None:
+def test_or_cannot_use_an_index(db: mvrs_db.Database) -> None:
     assert "SeqScan(items)" in plan(db, "SELECT * FROM items WHERE id = 1 OR id = 2")
 
 
-def test_filter_is_kept_above_an_index_scan(db: kestreldb.Database) -> None:
+def test_filter_is_kept_above_an_index_scan(db: mvrs_db.Database) -> None:
     lines = plan(db, "SELECT * FROM items WHERE id = 5 AND grp = 5").splitlines()
     assert lines[1].strip().startswith("Filter(id = 5 AND grp = 5)")
     assert lines[2].strip().startswith("IndexScan(items.id: id = 5)")
 
 
-def test_order_by_on_the_scanned_index_needs_no_sort(db: kestreldb.Database) -> None:
+def test_order_by_on_the_scanned_index_needs_no_sort(db: mvrs_db.Database) -> None:
     text = plan(db, "SELECT * FROM items WHERE id > 3900 ORDER BY id")
     assert "IndexScan" in text
     assert "Sort" not in text and "TopN" not in text
 
 
-def test_order_by_with_limit_walks_the_index_and_stops_early(db: kestreldb.Database) -> None:
+def test_order_by_with_limit_walks_the_index_and_stops_early(db: mvrs_db.Database) -> None:
     text = plan(db, "SELECT * FROM items ORDER BY id LIMIT 5")
     assert "IndexScan(items.id: all rows, in key order)" in text
     assert "Limit(5)" in text
     assert "TopN" not in text and "SeqScan" not in text
 
 
-def test_order_by_other_column_with_limit_uses_top_n(db: kestreldb.Database) -> None:
+def test_order_by_other_column_with_limit_uses_top_n(db: mvrs_db.Database) -> None:
     text = plan(db, "SELECT * FROM items ORDER BY price DESC LIMIT 5")
     assert "TopN(5; price DESC)" in text
     assert "SeqScan(items)" in text
 
 
-def test_order_by_without_limit_sorts(db: kestreldb.Database) -> None:
+def test_order_by_without_limit_sorts(db: mvrs_db.Database) -> None:
     assert "Sort(grp ASC, id DESC)" in plan(db, "SELECT * FROM items ORDER BY grp, id DESC")
 
 
-def test_ordered_index_walk_is_not_used_for_a_nullable_column(db: kestreldb.Database) -> None:
+def test_ordered_index_walk_is_not_used_for_a_nullable_column(db: mvrs_db.Database) -> None:
     # NULL codes are not in the index, so walking it would silently drop those rows.
     text = plan(db, "SELECT * FROM items ORDER BY code LIMIT 5")
     assert "SeqScan(items)" in text
@@ -107,7 +107,7 @@ def test_ordered_index_walk_is_not_used_for_a_nullable_column(db: kestreldb.Data
     assert rows == [(0,), (10,), (20,)]  # the NULLs come first
 
 
-def test_explain_update_and_delete(db: kestreldb.Database) -> None:
+def test_explain_update_and_delete(db: mvrs_db.Database) -> None:
     update = plan(db, "UPDATE items SET note = 'x' WHERE id = 7")
     delete = plan(db, "DELETE FROM items WHERE id < 3")
 
@@ -118,7 +118,7 @@ def test_explain_update_and_delete(db: kestreldb.Database) -> None:
     assert db.execute("SELECT note FROM items WHERE id = 7").rows == [("note 7",)]  # not executed
 
 
-def test_estimates_are_shown(db: kestreldb.Database) -> None:
+def test_estimates_are_shown(db: mvrs_db.Database) -> None:
     text = plan(db, "SELECT * FROM items WHERE id >= 1000 AND id < 1100")
     assert "rows~100 " in text
 
@@ -151,7 +151,7 @@ QUERIES = [
 
 @pytest.mark.parametrize("where", QUERIES)
 def test_every_plan_returns_exactly_the_rows_a_full_scan_would(
-    db: kestreldb.Database, where: str
+    db: mvrs_db.Database, where: str
 ) -> None:
     """The index is an optimisation. It must never change which rows come back."""
 

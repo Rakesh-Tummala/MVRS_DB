@@ -12,8 +12,8 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-import kestreldb
-from kestreldb.errors import ConstraintViolationError
+import mvrs_db
+from mvrs_db.errors import ConstraintViolationError
 
 Row = tuple[int, str | None, int | None]
 
@@ -53,8 +53,8 @@ def test_engine_matches_a_dictionary_model(
     tmp_path_factory: pytest.TempPathFactory,
     operations: list[tuple],  # type: ignore[type-arg]
 ) -> None:
-    path = tmp_path_factory.mktemp("model") / "model.kdb"
-    db = kestreldb.connect(path, synchronous=False, buffer_pages=16)
+    path = tmp_path_factory.mktemp("model") / "model.mvrs"
+    db = mvrs_db.connect(path, synchronous=False, buffer_pages=16)
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT UNIQUE, n INTEGER)")
     model: dict[int, Row] = {}
     saved: dict[int, Row] | None = None  # the model as of BEGIN, while a transaction is open
@@ -152,7 +152,7 @@ def test_engine_matches_a_dictionary_model(
             db.close()
             if saved is not None:
                 model, saved = saved, None
-            db = kestreldb.connect(path, synchronous=False, buffer_pages=16)
+            db = mvrs_db.connect(path, synchronous=False, buffer_pages=16)
 
     if saved is not None:
         db.execute("COMMIT")

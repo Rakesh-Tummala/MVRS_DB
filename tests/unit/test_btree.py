@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from kestreldb.errors import CorruptIndexError, DuplicateKeyError, KeyTooLargeError
-from kestreldb.index import btree_node as node
-from kestreldb.index.btree import BTree
-from kestreldb.index.keys import encode_key
-from kestreldb.storage.buffer_pool import BufferPool
-from kestreldb.storage.disk_manager import DiskManager
-from kestreldb.storage.heap_file import RecordId
-from kestreldb.storage.page import PageType, page_type_of
-from kestreldb.storage.record import ColumnType
+from mvrs_db.errors import CorruptIndexError, DuplicateKeyError, KeyTooLargeError
+from mvrs_db.index import btree_node as node
+from mvrs_db.index.btree import BTree
+from mvrs_db.index.keys import encode_key
+from mvrs_db.storage.buffer_pool import BufferPool
+from mvrs_db.storage.disk_manager import DiskManager
+from mvrs_db.storage.heap_file import RecordId
+from mvrs_db.storage.page import PageType, page_type_of
+from mvrs_db.storage.record import ColumnType
 
 SMALL = 150  # node capacity in bytes: about 6 integer keys per node, so trees get deep fast
 
@@ -37,7 +37,7 @@ def new_tree(
 
 
 def test_empty_tree(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
 
     assert tree.get(key(1)) is None
     assert list(tree.scan()) == []
@@ -50,7 +50,7 @@ def test_empty_tree(tmp_path: Path) -> None:
 
 
 def test_insert_and_get_without_splitting(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
 
     for value in (3, 1, 2):
         tree.insert(key(value), rid(value))
@@ -62,7 +62,7 @@ def test_insert_and_get_without_splitting(tmp_path: Path) -> None:
 
 
 def test_duplicate_key_is_rejected_and_changes_nothing(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
     for value in range(50):
         tree.insert(key(value), rid(value))
 
@@ -75,7 +75,7 @@ def test_duplicate_key_is_rejected_and_changes_nothing(tmp_path: Path) -> None:
 
 
 def test_oversized_key_is_rejected(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb", capacity=None)
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs", capacity=None)
 
     tree.insert(b"k" * 255, RecordId(1, 0))
     with pytest.raises(KeyTooLargeError):
@@ -85,7 +85,7 @@ def test_oversized_key_is_rejected(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("order", ["ascending", "descending", "random"])
 def test_splits_keep_every_invariant_after_every_insert(tmp_path: Path, order: str) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
     values = list(range(400))
     if order == "descending":
         values.reverse()
@@ -106,7 +106,7 @@ def test_splits_keep_every_invariant_after_every_insert(tmp_path: Path, order: s
 
 
 def test_leaf_split_copies_the_separator_up(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
     for value in (10, 20, 30, 40, 50, 60, 25):  # the 7th key overflows a 150-byte leaf
         tree.insert(key(value), rid(value))
 
@@ -123,7 +123,7 @@ def test_leaf_split_copies_the_separator_up(tmp_path: Path) -> None:
 
 
 def test_ascending_inserts_leave_leaves_full(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb", capacity=None, frames=256)
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs", capacity=None, frames=256)
 
     for value in range(20_000):
         tree.insert(key(value), rid(value))
@@ -141,7 +141,7 @@ def _is_leaf(pool: BufferPool, page_id: int) -> bool:
 
 
 def test_variable_length_keys_including_the_largest(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb", capacity=None)
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs", capacity=None)
     rng = random.Random(7)
     keys = {
         bytes(rng.randrange(256) for _ in range(rng.choice([0, 1, 8, 100, 255])))
@@ -183,7 +183,7 @@ def test_range_scans(
     high_inclusive: bool,
     expected: list[int],
 ) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
     for value in range(0, 200, 2):
         tree.insert(key(value), rid(value))
 
@@ -199,7 +199,7 @@ def test_range_scans(
 
 
 def test_delete(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
     for value in range(300):
         tree.insert(key(value), rid(value))
 
@@ -216,7 +216,7 @@ def test_delete(tmp_path: Path) -> None:
 
 
 def test_scans_skip_leaves_emptied_by_deletes(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
     for value in range(300):
         tree.insert(key(value), rid(value))
 
@@ -231,7 +231,7 @@ def test_scans_skip_leaves_emptied_by_deletes(tmp_path: Path) -> None:
 
 
 def test_emptied_tree_can_be_refilled(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
     for value in range(200):
         tree.insert(key(value), rid(value))
     pages_before = len(tree.pages())
@@ -250,7 +250,7 @@ def test_emptied_tree_can_be_refilled(tmp_path: Path) -> None:
 
 
 def test_tree_survives_reopen(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     disk, pool, tree = new_tree(path, frames=8)
     root = tree.root_page
     values = list(range(2000))
@@ -269,7 +269,7 @@ def test_tree_survives_reopen(tmp_path: Path) -> None:
 
 
 def test_drop_frees_every_page(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
     for value in range(300):
         tree.insert(key(value), rid(value))
     pages = tree.pages()
@@ -282,7 +282,7 @@ def test_drop_frees_every_page(tmp_path: Path) -> None:
 
 
 def test_no_pages_stay_pinned(tmp_path: Path) -> None:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
     for value in range(300):
         tree.insert(key(value), rid(value))
     tree.delete(key(5))
@@ -298,7 +298,7 @@ def test_no_pages_stay_pinned(tmp_path: Path) -> None:
 
 
 def build(tmp_path: Path, count: int = 60) -> tuple[DiskManager, BufferPool, BTree]:
-    disk, pool, tree = new_tree(tmp_path / "db.kdb")
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs")
     for value in range(count):
         tree.insert(key(value), rid(value))
     return disk, pool, tree

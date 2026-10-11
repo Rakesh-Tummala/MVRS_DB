@@ -11,8 +11,8 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from kestreldb import config
-from kestreldb.errors import (
+from mvrs_db import config
+from mvrs_db.errors import (
     ChecksumMismatchError,
     CorruptFileError,
     CorruptHeaderError,
@@ -24,14 +24,14 @@ from kestreldb.errors import (
     InvalidPageBufferError,
     InvalidPageIdError,
     InvalidPageSizeError,
-    KestrelError,
+    MvrsDbError,
     NotADatabaseError,
     PageIdMismatchError,
     StorageIOError,
     UnsupportedVersionError,
 )
-from kestreldb.storage.disk_manager import DiskManager, FileHeader
-from kestreldb.storage.page import PAGE_HEADER_SIZE, PageType, new_page, read_header
+from mvrs_db.storage.disk_manager import DiskManager, FileHeader
+from mvrs_db.storage.page import PAGE_HEADER_SIZE, PageType, new_page, read_header
 
 PAGE_SIZE = config.DEFAULT_PAGE_SIZE
 
@@ -82,7 +82,7 @@ def write_file(path: Path, header: bytes, total_size: int = PAGE_SIZE) -> Path:
     return path
 
 
-def assert_open_fails_without_modifying(path: Path, error: type[KestrelError]) -> None:
+def assert_open_fails_without_modifying(path: Path, error: type[MvrsDbError]) -> None:
     before = path.read_bytes()
     with pytest.raises(error):
         DiskManager.open(path)
@@ -99,7 +99,7 @@ def filled_page(dm: DiskManager, page_id: int, fill: int) -> bytearray:
 
 
 def test_create_writes_one_page_with_a_valid_header(tmp_path: Path) -> None:
-    path = tmp_path / "new.kdb"
+    path = tmp_path / "new.mvrs"
 
     with DiskManager.create(path) as dm:
         assert dm.page_size == PAGE_SIZE
@@ -109,14 +109,14 @@ def test_create_writes_one_page_with_a_valid_header(tmp_path: Path) -> None:
 
     raw = path.read_bytes()
     assert len(raw) == PAGE_SIZE
-    assert raw[:8] == b"KESTREL\x00"
+    assert raw[:8] == b"MVRS_DB\x00"
     assert raw[config.FILE_HEADER_SIZE :] == bytes(PAGE_SIZE - config.FILE_HEADER_SIZE)
     assert FileHeader.unpack(raw[: config.FILE_HEADER_SIZE]).page_count == 1
 
 
 @pytest.mark.parametrize("page_size", config.ALLOWED_PAGE_SIZES)
 def test_every_allowed_page_size_round_trips(tmp_path: Path, page_size: int) -> None:
-    path = tmp_path / "sized.kdb"
+    path = tmp_path / "sized.mvrs"
 
     with DiskManager.create(path, page_size) as dm:
         page_id = dm.extend()
@@ -132,7 +132,7 @@ def test_every_allowed_page_size_round_trips(tmp_path: Path, page_size: int) -> 
 
 @pytest.mark.parametrize("page_size", [0, 1, 512, 4095, 4097, 5000, 65536, -4096])
 def test_create_rejects_invalid_page_size(tmp_path: Path, page_size: int) -> None:
-    path = tmp_path / "bad.kdb"
+    path = tmp_path / "bad.mvrs"
 
     with pytest.raises(InvalidPageSizeError):
         DiskManager.create(path, page_size)
@@ -141,7 +141,7 @@ def test_create_rejects_invalid_page_size(tmp_path: Path, page_size: int) -> Non
 
 
 def test_create_refuses_to_overwrite_an_existing_database(tmp_path: Path) -> None:
-    path = make_db(tmp_path / "existing.kdb", pages=2)
+    path = make_db(tmp_path / "existing.mvrs", pages=2)
     before = path.read_bytes()
 
     with pytest.raises(DatabaseExistsError):
@@ -162,11 +162,11 @@ def test_create_refuses_to_overwrite_an_unrelated_file(tmp_path: Path) -> None:
 
 def test_create_in_a_missing_directory_is_a_storage_error(tmp_path: Path) -> None:
     with pytest.raises(StorageIOError):
-        DiskManager.create(tmp_path / "no_such_dir" / "db.kdb")
+        DiskManager.create(tmp_path / "no_such_dir" / "db.mvrs")
 
 
 def test_each_database_gets_its_own_id(tmp_path: Path) -> None:
-    with DiskManager.create(tmp_path / "a.kdb") as a, DiskManager.create(tmp_path / "b.kdb") as b:
+    with DiskManager.create(tmp_path / "a.mvrs") as a, DiskManager.create(tmp_path / "b.mvrs") as b:
         assert a.header.db_id != b.header.db_id
 
 
@@ -174,7 +174,7 @@ def test_each_database_gets_its_own_id(tmp_path: Path) -> None:
 
 
 def test_reopen_sees_the_same_header(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     with DiskManager.create(path) as dm:
         dm.extend()
         dm.extend()
@@ -186,7 +186,7 @@ def test_reopen_sees_the_same_header(tmp_path: Path) -> None:
 
 
 def test_open_missing_file(tmp_path: Path) -> None:
-    path = tmp_path / "missing.kdb"
+    path = tmp_path / "missing.mvrs"
 
     with pytest.raises(DatabaseNotFoundError):
         DiskManager.open(path)
@@ -204,7 +204,7 @@ def test_open_a_directory_is_a_storage_error(tmp_path: Path) -> None:
     [
         b"",
         b"K",
-        b"KESTREL",  # one byte short of the magic
+        b"MVRS_DB",  # one byte short of the magic
         b"SQLite format 3\x00" + bytes(4080),
         b"just a text file\r\nwith two lines\r\n",
         bytes(PAGE_SIZE),
@@ -220,7 +220,7 @@ def test_open_refuses_files_that_are_not_databases(tmp_path: Path, content: byte
 
 
 def test_open_refuses_a_header_cut_short_after_the_magic(tmp_path: Path) -> None:
-    path = tmp_path / "short.kdb"
+    path = tmp_path / "short.mvrs"
     path.write_bytes(raw_header()[:40])
 
     assert_open_fails_without_modifying(path, CorruptHeaderError)
@@ -228,7 +228,7 @@ def test_open_refuses_a_header_cut_short_after_the_magic(tmp_path: Path) -> None
 
 @pytest.mark.parametrize("offset", range(config.FILE_HEADER_SIZE))
 def test_flipping_any_header_byte_is_detected(tmp_path: Path, offset: int) -> None:
-    path = make_db(tmp_path / "db.kdb", pages=1)
+    path = make_db(tmp_path / "db.mvrs", pages=1)
     raw = bytearray(path.read_bytes())
     raw[offset] ^= 0x01
     path.write_bytes(raw)
@@ -239,7 +239,7 @@ def test_flipping_any_header_byte_is_detected(tmp_path: Path, offset: int) -> No
 
 @pytest.mark.parametrize("version", [0, 2, 65535])
 def test_open_refuses_unknown_format_versions(tmp_path: Path, version: int) -> None:
-    path = write_file(tmp_path / "future.kdb", raw_header(version=version))
+    path = write_file(tmp_path / "future.mvrs", raw_header(version=version))
 
     assert_open_fails_without_modifying(path, UnsupportedVersionError)
 
@@ -248,7 +248,7 @@ def test_open_refuses_unknown_format_versions(tmp_path: Path, version: int) -> N
 def test_open_refuses_invalid_page_size_even_with_a_valid_crc(
     tmp_path: Path, page_size: int
 ) -> None:
-    path = write_file(tmp_path / "bad.kdb", raw_header(page_size=page_size))
+    path = write_file(tmp_path / "bad.mvrs", raw_header(page_size=page_size))
 
     assert_open_fails_without_modifying(path, CorruptHeaderError)
 
@@ -268,13 +268,13 @@ def test_open_refuses_invalid_page_size_even_with_a_valid_crc(
 def test_open_refuses_inconsistent_headers_with_a_valid_crc(
     tmp_path: Path, fields: dict[str, int]
 ) -> None:
-    path = write_file(tmp_path / "bad.kdb", raw_header(**fields))  # type: ignore[arg-type]
+    path = write_file(tmp_path / "bad.mvrs", raw_header(**fields))  # type: ignore[arg-type]
 
     assert_open_fails_without_modifying(path, CorruptHeaderError)
 
 
 def test_open_refuses_a_truncated_file(tmp_path: Path) -> None:
-    path = make_db(tmp_path / "db.kdb", pages=3)
+    path = make_db(tmp_path / "db.mvrs", pages=3)
     raw = path.read_bytes()
 
     path.write_bytes(raw[: len(raw) - PAGE_SIZE // 2])  # half a page missing
@@ -285,14 +285,14 @@ def test_open_refuses_a_truncated_file(tmp_path: Path) -> None:
 
 
 def test_open_refuses_a_file_with_extra_bytes(tmp_path: Path) -> None:
-    path = make_db(tmp_path / "db.kdb", pages=1)
+    path = make_db(tmp_path / "db.mvrs", pages=1)
     path.write_bytes(path.read_bytes() + b"x")
 
     assert_open_fails_without_modifying(path, CorruptFileError)
 
 
 def test_opening_a_valid_database_does_not_modify_it(tmp_path: Path) -> None:
-    path = make_db(tmp_path / "db.kdb", pages=2)
+    path = make_db(tmp_path / "db.mvrs", pages=2)
     before = path.read_bytes()
 
     DiskManager.open(path).close()
@@ -304,7 +304,7 @@ def test_opening_a_valid_database_does_not_modify_it(tmp_path: Path) -> None:
 
 
 def test_extend_appends_valid_free_pages(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
 
     with DiskManager.create(path) as dm:
         assert [dm.extend(), dm.extend(), dm.extend()] == [1, 2, 3]
@@ -318,7 +318,7 @@ def test_extend_appends_valid_free_pages(tmp_path: Path) -> None:
 
 
 def test_written_pages_survive_reopen(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     with DiskManager.create(path) as dm:
         for fill in (0x11, 0x22, 0x33):
             page_id = dm.extend()
@@ -331,7 +331,7 @@ def test_written_pages_survive_reopen(tmp_path: Path) -> None:
 
 
 def test_pages_are_written_at_page_id_times_page_size(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     with DiskManager.create(path) as dm:
         dm.extend()
         dm.extend()
@@ -345,7 +345,7 @@ def test_pages_are_written_at_page_id_times_page_size(tmp_path: Path) -> None:
 
 def test_newline_bytes_are_stored_unchanged(tmp_path: Path) -> None:
     """Guards against Windows text-mode translation of \\n to \\r\\n."""
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     body = (b"\n\r\n\x1a" * PAGE_SIZE)[: PAGE_SIZE - PAGE_HEADER_SIZE]
 
     with DiskManager.create(path) as dm:
@@ -360,7 +360,7 @@ def test_newline_bytes_are_stored_unchanged(tmp_path: Path) -> None:
 
 
 def test_write_page_does_not_modify_the_callers_buffer(tmp_path: Path) -> None:
-    with DiskManager.create(tmp_path / "db.kdb") as dm:
+    with DiskManager.create(tmp_path / "db.mvrs") as dm:
         page_id = dm.extend()
         buf = filled_page(dm, page_id, 0x77)
         before = bytes(buf)
@@ -371,7 +371,7 @@ def test_write_page_does_not_modify_the_callers_buffer(tmp_path: Path) -> None:
 
 
 def test_read_page_returns_an_independent_copy(tmp_path: Path) -> None:
-    with DiskManager.create(tmp_path / "db.kdb") as dm:
+    with DiskManager.create(tmp_path / "db.mvrs") as dm:
         page_id = dm.extend()
         dm.write_page(page_id, filled_page(dm, page_id, 0x01))
 
@@ -383,7 +383,7 @@ def test_read_page_returns_an_independent_copy(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("page_id", [0, -1, 3, 4, 2**32, 2**64])
 def test_out_of_range_page_ids_are_rejected(tmp_path: Path, page_id: int) -> None:
-    with DiskManager.create(tmp_path / "db.kdb") as dm:
+    with DiskManager.create(tmp_path / "db.mvrs") as dm:
         dm.extend()
         dm.extend()  # valid IDs are 1 and 2
 
@@ -395,7 +395,7 @@ def test_out_of_range_page_ids_are_rejected(tmp_path: Path, page_id: int) -> Non
 
 @pytest.mark.parametrize("page_id", [1.0, "1", None, True])
 def test_non_integer_page_ids_are_rejected(tmp_path: Path, page_id: object) -> None:
-    with DiskManager.create(tmp_path / "db.kdb") as dm:
+    with DiskManager.create(tmp_path / "db.mvrs") as dm:
         dm.extend()
 
         with pytest.raises(InvalidPageIdError):
@@ -404,7 +404,7 @@ def test_non_integer_page_ids_are_rejected(tmp_path: Path, page_id: object) -> N
 
 @pytest.mark.parametrize("length", [0, 1, PAGE_SIZE - 1, PAGE_SIZE + 1, 2 * PAGE_SIZE])
 def test_write_rejects_buffers_that_are_not_one_page(tmp_path: Path, length: int) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     with DiskManager.create(path) as dm:
         dm.extend()
         with pytest.raises(InvalidPageBufferError):
@@ -414,7 +414,7 @@ def test_write_rejects_buffers_that_are_not_one_page(tmp_path: Path, length: int
 
 
 def test_write_refuses_a_page_whose_header_names_another_page(tmp_path: Path) -> None:
-    with DiskManager.create(tmp_path / "db.kdb") as dm:
+    with DiskManager.create(tmp_path / "db.mvrs") as dm:
         dm.extend()
         dm.extend()
         dm.write_page(2, filled_page(dm, 2, 0x22))
@@ -426,7 +426,7 @@ def test_write_refuses_a_page_whose_header_names_another_page(tmp_path: Path) ->
 
 
 def test_write_refuses_a_page_with_an_invalid_type(tmp_path: Path) -> None:
-    with DiskManager.create(tmp_path / "db.kdb") as dm:
+    with DiskManager.create(tmp_path / "db.mvrs") as dm:
         dm.extend()
         buf = new_page(PAGE_SIZE, 1, PageType.HEAP)
         buf[16] = 0
@@ -439,7 +439,7 @@ def test_write_refuses_a_page_with_an_invalid_type(tmp_path: Path) -> None:
 
 
 def test_damaged_page_on_disk_is_detected(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     with DiskManager.create(path) as dm:
         dm.extend()
         dm.extend()
@@ -458,7 +458,7 @@ def test_damaged_page_on_disk_is_detected(tmp_path: Path) -> None:
 
 
 def test_zeroed_page_on_disk_is_detected(tmp_path: Path) -> None:
-    path = make_db(tmp_path / "db.kdb", pages=2)
+    path = make_db(tmp_path / "db.mvrs", pages=2)
     raw = bytearray(path.read_bytes())
     raw[PAGE_SIZE : 2 * PAGE_SIZE] = bytes(PAGE_SIZE)
     path.write_bytes(raw)
@@ -468,7 +468,7 @@ def test_zeroed_page_on_disk_is_detected(tmp_path: Path) -> None:
 
 
 def test_torn_page_on_disk_is_detected(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     with DiskManager.create(path) as dm:
         dm.extend()
         dm.write_page(1, filled_page(dm, 1, 0xAA))
@@ -485,7 +485,7 @@ def test_torn_page_on_disk_is_detected(tmp_path: Path) -> None:
 
 
 def test_page_stored_at_the_wrong_offset_is_detected(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     with DiskManager.create(path) as dm:
         dm.extend()
         dm.extend()
@@ -505,7 +505,7 @@ def test_any_single_byte_damage_on_disk_is_detected(
 ) -> None:
     # The database is created inside the test body: Hypothesis runs this many
     # times, and a function-scoped fixture would be shared between runs.
-    path = tmp_path_factory.mktemp("damage") / "db.kdb"
+    path = tmp_path_factory.mktemp("damage") / "db.mvrs"
     with DiskManager.create(path) as dm:
         dm.extend()
         dm.write_page(1, filled_page(dm, 1, 0x3C))
@@ -522,7 +522,7 @@ def test_any_single_byte_damage_on_disk_is_detected(
 def test_any_page_body_round_trips_through_reopen(
     tmp_path_factory: pytest.TempPathFactory, body: bytes
 ) -> None:
-    path = tmp_path_factory.mktemp("roundtrip") / "db.kdb"
+    path = tmp_path_factory.mktemp("roundtrip") / "db.mvrs"
     with DiskManager.create(path) as dm:
         page_id = dm.extend()
         buf = new_page(PAGE_SIZE, page_id, PageType.HEAP)
@@ -537,7 +537,7 @@ def test_any_page_body_round_trips_through_reopen(
 
 
 def test_use_after_close_raises(tmp_path: Path) -> None:
-    dm = DiskManager.create(tmp_path / "db.kdb")
+    dm = DiskManager.create(tmp_path / "db.mvrs")
     dm.extend()
     dm.close()
 
@@ -553,14 +553,14 @@ def test_use_after_close_raises(tmp_path: Path) -> None:
 
 
 def test_close_twice_is_harmless(tmp_path: Path) -> None:
-    dm = DiskManager.create(tmp_path / "db.kdb")
+    dm = DiskManager.create(tmp_path / "db.mvrs")
     dm.close()
     dm.close()
 
 
 def test_file_can_be_deleted_after_close(tmp_path: Path) -> None:
     """On Windows an open handle blocks deletion, so this proves close() released it."""
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     DiskManager.create(path).close()
 
     path.unlink()
@@ -580,13 +580,13 @@ def test_failed_open_releases_the_file_handle(tmp_path: Path) -> None:
 
 
 def test_sync_succeeds_on_an_open_database(tmp_path: Path) -> None:
-    with DiskManager.create(tmp_path / "db.kdb") as dm:
+    with DiskManager.create(tmp_path / "db.mvrs") as dm:
         dm.extend()
         dm.sync()
 
 
 def test_extend_refuses_to_grow_past_the_page_id_limit(tmp_path: Path) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     with DiskManager.create(path) as dm:
         dm._header = replace(dm.header, page_count=config.MAX_PAGE_ID + 1)  # pretend it is full
 
@@ -599,7 +599,7 @@ def test_extend_refuses_to_grow_past_the_page_id_limit(tmp_path: Path) -> None:
 def test_failed_header_update_during_extend_leaves_a_consistent_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / "db.kdb"
+    path = tmp_path / "db.mvrs"
     dm = DiskManager.create(path)
     dm.extend()
 

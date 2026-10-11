@@ -7,8 +7,8 @@ import time
 
 import pytest
 
-from kestreldb.errors import DeadlockError, LockTimeoutError
-from kestreldb.transactions.lock_manager import EXCLUSIVE, SHARED, LockManager
+from mvrs_db.errors import DeadlockError, LockTimeoutError
+from mvrs_db.transactions.lock_manager import EXCLUSIVE, SHARED, LockManager
 
 
 def in_thread(function: object, *args: object) -> tuple[threading.Thread, dict[str, object]]:
