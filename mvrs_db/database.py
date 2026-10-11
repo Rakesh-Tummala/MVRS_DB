@@ -159,7 +159,7 @@ class Database:
         self.recovery = recovery
         # The WAL rule: before any page reaches the data file, the log records
         # describing it must be durable. wal.sync is a no-op when they already are.
-        self._pool = BufferPool(disk, buffer_pages, before_page_write=wal.sync)
+        self._pool = BufferPool(disk, buffer_pages, before_page_write=self._make_log_durable)
         self._catalog = Catalog(self._pool)
         self._executor = Executor(self._catalog)
         self._locks = LockManager(lock_timeout)
@@ -255,11 +255,12 @@ class Database:
             self._pool.begin()
             try:
                 self._catalog.bootstrap()
-                self._log_and_commit(next(self._txn_ids))
+                end = self._log_and_commit(next(self._txn_ids))
             except BaseException:
                 if self._pool.in_transaction:
                     self._pool.rollback()
                 raise
+            self._await_durable(end)
         self._catalog.load()
 
     def close(self) -> None:
@@ -370,9 +371,20 @@ class Database:
 
     def _run(self, txn: Transaction, statement: ast.Statement) -> Result:
         """Lock what the statement needs and execute it."""
+        if isinstance(statement, (ast.Begin, ast.Commit, ast.Rollback)):
+            raise TransactionError("transaction control is handled by the connection")
+        # Once the log cannot be made durable, memory may hold commits that
+        # will not survive a restart. Nothing can be trusted, reads included.
+        failure = self._failed or self._wal.failure
+        if failure is not None:
+            raise EngineFailedError(
+                f"an earlier durability step failed ({failure}); close and reopen the database"
+            )
         if isinstance(statement, ast.Select):
             self._lock_for_reading(txn, statement)
-            return self._executor.select(statement)
+            result = self._executor.select(statement)
+            self._wait_for_visible_commits()
+            return result
         if isinstance(statement, ast.Explain):
             inner = statement.statement
             if isinstance(inner, ast.Select):
@@ -380,14 +392,7 @@ class Database:
             else:
                 self._locks.acquire(txn.txn_id, _table_lock(inner.table), SHARED)
             return self._executor.explain(statement)
-        if isinstance(statement, (ast.Begin, ast.Commit, ast.Rollback)):
-            raise TransactionError("transaction control is handled by the connection")
 
-        if self._failed is not None:
-            raise EngineFailedError(
-                f"an earlier durability step failed ({self._failed}); "
-                f"close and reopen the database before writing"
-            )
         if not txn.writing:
             # One writer at a time: page-level logging and rollback are only
             # correct if a page never holds two transactions' uncommitted changes.
@@ -412,24 +417,87 @@ class Database:
             raise
 
     def _finish(self, txn: Transaction, *, commit: bool) -> None:
-        """End a transaction and release its locks."""
+        """End a transaction.
+
+        A commit has two moments. The commit record is appended to the log while
+        the transaction still holds its locks, which fixes its place in the
+        order of commits. Then the locks are released (early lock release) and
+        the transaction waits for the log to reach the disk. Other transactions
+        proceed during that wait, and their commit records land behind this one,
+        so one fsync can make a whole group of them durable.
+        """
+        durable_at: int | None = None
+        was_writer = txn.writing
         try:
             if txn.writing:
                 txn.writing = False
                 if commit:
                     try:
-                        self._log_and_commit(txn.txn_id)
+                        durable_at = self._log_and_commit(txn.txn_id)
                     except BaseException:
-                        self._wal.discard_buffer()
                         self._rollback_pages()
                         raise
                     self._catalog.transaction_committed()
-                    if self._wal.size > self._checkpoint_bytes:
-                        self._checkpoint()
                 else:
                     self._rollback_pages()
         finally:
             self._locks.release_all(txn.txn_id)
+        if commit:
+            self._await_durable(durable_at)
+            if was_writer:
+                self._maybe_checkpoint()
+
+    def _await_durable(self, position: int | None) -> None:
+        """Wait until the log is durable up to `position` (None: nothing to wait for)."""
+        if position is None:
+            return
+        try:
+            self._wal.flush_through(position, sync=self._synchronous)
+        except StorageIOError as exc:
+            # The commit record may or may not have reached the disk; reopening
+            # runs recovery, which settles it. Until then the engine is stopped.
+            self._failed = str(exc)
+            raise
+        faults.crash_point("commit.after_durable")
+
+    def _make_log_durable(self, position: int | None) -> None:
+        """The WAL rule, called by the buffer pool before it writes a page.
+
+        `position` is the end of the commit record of the transaction that last
+        changed the page; None means everything appended so far. A page that
+        was committed but whose commit record is still waiting for its fsync
+        holds the write until the log catches up.
+        """
+        if position is None:
+            self._wal.sync()
+        elif position:
+            self._wal.flush_through(position, sync=True)
+
+    def _wait_for_visible_commits(self) -> None:
+        """Do not hand data to the caller that a crash could still take back.
+
+        A transaction's changes become visible to others when it appends its
+        commit record, slightly before the record is durable. A reader that saw
+        such changes must not return them until they are durable. For a writer
+        that is automatic: its own commit record lies after the one it read, so
+        it cannot be acknowledged first. A reader has no record of its own, so it
+        waits for everything appended so far. With nothing pending this is a
+        comparison and returns at once.
+        """
+        self._await_durable(self._wal.next_lsn)
+
+    def _maybe_checkpoint(self) -> None:
+        """Checkpoint if the log has grown past its limit. Takes the writer slot."""
+        if self._wal.size <= self._checkpoint_bytes or self._failed is not None:
+            return
+        owner = next(self._txn_ids)
+        self._locks.acquire(owner, _WRITER, EXCLUSIVE)
+        try:
+            # Another committer may have checkpointed while this one waited.
+            if self._wal.size > self._checkpoint_bytes and self._failed is None:
+                self._checkpoint()
+        finally:
+            self._locks.release_all(owner)
 
     def _rollback_pages(self) -> None:
         if self._pool.in_transaction:
@@ -438,8 +506,13 @@ class Database:
         # changes that no longer exist. Rebuild them from the restored pages.
         self._catalog.load()
 
-    def _log_and_commit(self, txn_id: int) -> None:
-        """Make the active transaction durable (the commit protocol)."""
+    def _log_and_commit(self, txn_id: int) -> int | None:
+        """Append the active transaction's log records and mark it committed in memory.
+
+        Returns the log position after its commit record, which the caller waits
+        on for durability, or None if the transaction changed nothing. Nothing
+        here touches the disk.
+        """
         pool, wal = self._pool, self._wal
         # Decide, per changed page, between a delta and a full image.
         # (page ID, page buffer, ranges that changed or None for a full image)
@@ -463,9 +536,13 @@ class Database:
 
         if not to_log and not pool.header_changed():
             pool.commit()  # the transaction changed nothing
-            return
+            return None
         faults.crash_point("commit.before_log")
-        try:
+        # All of this transaction's records go into the buffer as one unit. The
+        # pool's latch is not taken inside the block: the pool calls into the log
+        # while holding its latch (before it writes a page), so the other order
+        # could deadlock.
+        with wal.atomic_append():
             if pool.header_changed():
                 wal.append(RecordType.HEADER, txn_id, self._disk.header.pack())
             for page_id, data, before, delta_ranges in to_log:
@@ -479,19 +556,14 @@ class Database:
                         encode_delta(page_id, page_lsn(before), data, delta_ranges),
                     )
             wal.append(RecordType.COMMIT, txn_id)
-            faults.crash_point("commit.before_flush")
-            wal.flush(sync=self._synchronous)
-        except StorageIOError as exc:
-            # The log may or may not contain the commit record now. Refuse
-            # further writes; reopening runs recovery, which settles the outcome.
-            wal.discard_buffer()
-            self._failed = str(exc)
-            raise
-        # Only now, with the records durable, do these pages count as imaged.
+            end = wal.next_lsn
+        # These pages now have a full image in the log (possibly not on disk
+        # yet; any write of the page waits for the log first, so that is enough).
         self._imaged.update(page_id for page_id, _d, _b, planned in to_log if planned is None)
-        pool.commit()
+        pool.commit(end)
         self.commits += 1
-        faults.crash_point("commit.after_durable")
+        faults.crash_point("commit.before_flush")  # buffered, not yet written
+        return end
 
     def _checkpoint(self) -> None:
         """Caller must hold the writer slot (or be the only user, as in close())."""

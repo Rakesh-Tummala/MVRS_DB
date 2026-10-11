@@ -38,9 +38,10 @@ Run the tests with:
 | 14 | Aggregates | `12-aggregates-and-joins.md` | `HashAggregate`, `MetadataAggregate` in `execution/operators.py`; `_plan_aggregate` in `planner/planner.py` | `integration/test_aggregates.py` |
 | 15 | Joins | `12-aggregates-and-joins.md` | `planner/scope.py`; `_plan_join` in `planner/planner.py`; `HashJoin`, `IndexJoin` in `execution/operators.py` | `integration/test_joins.py` |
 | 16 | Vector search | `11-vector-search.md` | `vector/distance.py`, `vector/hnsw.py`; `VectorTopK`, `VectorIndexScan` in `execution/operators.py` | `integration/test_vectors.py`, `test_vector_search.py`, `test_vector_index.py` |
+| 18 | Group commit | `05-wal-and-recovery.md` (sections "Commit, step by step", "Write ordering") | `recovery/wal.py` (`flush_through`, `atomic_append`); `_finish`, `_log_and_commit`, `_make_log_durable` in `database.py`; `commit(durable_after)` in `storage/buffer_pool.py` | `concurrency/test_group_commit.py`, `crash_recovery/test_crash_concurrent.py`, `benchmarks/group_commit.py` |
 | 17 | Delta log records | `05-wal-and-recovery.md` (section "Log whole pages, or the bytes that changed") | `recovery/delta.py`; `_log_and_commit` in `database.py`; `_rebuild` in `recovery/recovery_manager.py` | `unit/test_delta.py`, `crash_recovery/`, `benchmarks/log_volume.py` |
 
-Topics 14 to 17 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
+Topics 14 to 18 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
 
 ## Questions to be able to answer
 
@@ -82,6 +83,15 @@ Topics 14 to 17 were added after the first thirteen. Each of their design docs e
 * Why must the first change to a page after a checkpoint be logged as a full page? What would go wrong with a torn page otherwise?
 * Why are deletes from an index poorly served by deltas, and what would fix that?
 * The log got 24 times smaller for single-row inserts. Why did commit speed show no measurable change, with fsync on or off?
+
+### Group commit
+* Why could the single-writer design never batch commits, and what changed to allow it?
+* Explain the leader and the followers. Why is the `fsync` done without holding the lock?
+* What is early lock release? Why is it safe for writers, and what extra is needed for readers?
+* Why must a page wait for its transaction's *commit record* and not for its own record? What breaks otherwise?
+* Why does the whole engine stop, reads included, after a log write failure?
+* Throughput went up 7.4 times at 16 threads. What got worse?
+* The first test written for the page-write rule passed even with the rule removed. Why, and what makes the replacement different?
 
 ### SQL and execution
 * What does a lexer do that a parser does not?

@@ -33,10 +33,14 @@ Finding the end of the log
     valid CRCs but LSNs below the new base, so they are rejected.
 
 User-space buffer
-    append() only adds to a buffer in this process. flush() hands the bytes to
-    the operating system, and fsync makes them durable. A process that dies
-    before flush() loses the buffered records, which is exactly what the crash
+    append() only adds to a buffer in this process. flush_through() hands the
+    bytes to the operating system, and fsync makes them durable. A process that
+    dies before then loses the buffered records, which is exactly what the crash
     tests rely on.
+
+Group commit
+    Several threads may append and wait at once; one of them writes and fsyncs
+    the whole batch for all. See WalWriter.
 """
 
 from __future__ import annotations
@@ -44,7 +48,9 @@ from __future__ import annotations
 import contextlib
 import os
 import struct
+import threading
 import zlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -158,7 +164,29 @@ def read_wal(path: str | os.PathLike[str]) -> WalContents | None:
 
 
 class WalWriter:
-    """Appends records to the log. One writer per database, used by one thread at a time."""
+    """Appends records to the log and makes them durable, shared by many threads.
+
+    Two separate steps, which is what makes group commit possible:
+
+    append()         adds a record to an in-memory buffer. Cheap, never blocks on
+                     the disk. The position a record gets is its LSN.
+    flush_through()  makes everything up to a position durable. If another thread
+                     is already writing, it waits for that write; if that write
+                     did not cover its position, it writes the next batch.
+
+    Group commit
+        Writing to the file and calling fsync take milliseconds, so a thread that
+        is in the middle of it (the "leader") does so without holding the lock.
+        Meanwhile other threads append their records to a fresh buffer and call
+        flush_through(). They wait. When the leader finishes, one waiter becomes
+        the next leader and writes everything that piled up, with a single
+        fsync. N commits that arrive while one fsync is running cost one more
+        fsync between them, not N.
+
+    Positions are absolute LSNs (base_lsn plus the byte offset after the header),
+    so they stay comparable across a checkpoint, which empties the file but
+    moves base_lsn forward past every position already handed out.
+    """
 
     def __init__(self, fd: int, path: Path, page_size: int, db_id: int, base_lsn: int) -> None:
         self._fd: int | None = fd
@@ -168,9 +196,17 @@ class WalWriter:
         self._base_lsn = base_lsn
         self._file_size = WAL_HEADER_SIZE
         self._buffer = bytearray()
-        self._unsynced = False
-        # Record bytes written since this writer was opened, across checkpoints.
-        self.bytes_written = 0
+        # Bytes a leader has taken out of the buffer and is writing right now.
+        self._inflight = 0
+        self._cond = threading.Condition(threading.RLock())
+        self._flushing = False
+        self._failure: str | None = None
+        self._written_lsn = base_lsn  # everything before this is in the file
+        self._synced_lsn = base_lsn  # everything before this survived an fsync
+        # Counters, for tests and benchmarks.
+        self.bytes_written = 0  # record bytes written since this writer was opened
+        self.flush_count = 0  # batches written
+        self.sync_count = 0  # fsyncs of the log
 
     @classmethod
     def create(
@@ -190,6 +226,11 @@ class WalWriter:
             raise
         return writer
 
+    # ------------------------------------------------------------------ positions
+
+    def _position(self, file_size: int) -> int:
+        return self._base_lsn + file_size - WAL_HEADER_SIZE
+
     @property
     def path(self) -> Path:
         return self._path
@@ -200,73 +241,144 @@ class WalWriter:
 
     @property
     def next_lsn(self) -> int:
-        """The LSN the next appended record will get."""
-        return self._base_lsn + self._file_size + len(self._buffer) - WAL_HEADER_SIZE
+        """The LSN the next appended record will get (the end of everything appended)."""
+        with self._cond:
+            return self._position(self._file_size + self._inflight + len(self._buffer))
 
     @property
     def size(self) -> int:
-        """Bytes in the file plus bytes still buffered."""
-        return self._file_size + len(self._buffer)
+        """Bytes in the file plus bytes being written or still buffered."""
+        with self._cond:
+            return self._file_size + self._inflight + len(self._buffer)
 
     @property
     def buffered_bytes(self) -> int:
         return len(self._buffer)
+
+    @property
+    def failure(self) -> str | None:
+        """Why the log can no longer be written, if it can't."""
+        return self._failure
+
+    @property
+    def _unsynced(self) -> bool:
+        return self._written_lsn > self._synced_lsn
 
     def _require_open(self) -> int:
         if self._fd is None:
             raise StorageIOError(f"log {self._path} is closed")
         return self._fd
 
+    # ------------------------------------------------------------------ appending
+
     def append(self, record_type: RecordType, txn_id: int, payload: bytes = b"") -> int:
         """Buffer one record and return its LSN. Nothing reaches the file yet."""
         self._require_open()
-        lsn = self.next_lsn
-        self._buffer += encode_record(lsn, txn_id, record_type, payload)
-        return lsn
+        with self._cond:
+            lsn = self._position(self._file_size + self._inflight + len(self._buffer))
+            self._buffer += encode_record(lsn, txn_id, record_type, payload)
+            return lsn
+
+    @contextlib.contextmanager
+    def atomic_append(self) -> Iterator[None]:
+        """Hold off writers while several records are appended as one unit.
+
+        A transaction's records are appended inside this block. No leader can
+        take a half-appended transaction out of the buffer, and if the block
+        raises, whatever it appended is removed again, so nothing but complete
+        batches ever reaches the file by this route.
+        """
+        with self._cond:
+            mark = len(self._buffer)
+            try:
+                yield
+            except BaseException:
+                del self._buffer[mark:]
+                raise
 
     def discard_buffer(self) -> None:
-        """Drop records that were appended but not flushed."""
-        self._buffer.clear()
+        """Drop everything not yet written.
 
-    def flush(self, *, sync: bool = True) -> None:
-        """Write buffered records to the file, and fsync them if `sync`."""
-        fd = self._require_open()
-        if not self._buffer:
-            return
-        faults.crash_point("wal.before_flush")
-        data = bytes(self._buffer)
+        Unsafe once several threads share the log: it would drop other
+        transactions' commits. The database uses atomic_append() instead; this
+        remains for single-threaded use and tests.
+        """
+        with self._cond:
+            self._buffer.clear()
+
+    # ------------------------------------------------------------------ writing
+
+    def flush_through(self, target: int, *, sync: bool = True) -> None:
+        """Return once every record before position `target` has been written
+        (and fsynced, if `sync`). Raises StorageIOError if the log has failed."""
+        with self._cond:
+            while True:
+                if self._failure is not None:
+                    raise StorageIOError(self._failure)
+                if (self._synced_lsn if sync else self._written_lsn) >= target:
+                    return
+                if not self._flushing:
+                    break
+                self._cond.wait()  # a leader is writing; its batch may cover us
+            fd = self._require_open()
+            self._flushing = True
+            data = bytes(self._buffer)
+            self._buffer.clear()
+            self._inflight = len(data)
+            offset = self._file_size
+            end = self._position(offset + len(data))
+        # The I/O happens without the lock, so other threads can keep appending.
         try:
-            os.lseek(fd, self._file_size, os.SEEK_SET)
-            if faults.armed("wal.partial_flush"):
-                _write_all(fd, data[: len(data) // 2])
-                faults.crash()
-            _write_all(fd, data)
-            self._unsynced = True
-            faults.crash_point("wal.after_write")
-            if sync:
+            if data:
+                faults.crash_point("wal.before_flush")
+                os.lseek(fd, offset, os.SEEK_SET)
+                if faults.armed("wal.partial_flush"):
+                    _write_all(fd, data[: len(data) // 2])
+                    faults.crash()
+                _write_all(fd, data)
+                faults.crash_point("wal.after_write")
+            synced = False
+            if sync and (data or self._written_lsn > self._synced_lsn):
                 os.fsync(fd)
-                self._unsynced = False
+                synced = True
         except OSError as exc:
-            raise StorageIOError(f"cannot write log {self._path}: {exc}") from exc
-        self._file_size += len(data)
-        self.bytes_written += len(data)
-        self._buffer.clear()
+            with self._cond:
+                self._failure = f"cannot write log {self._path}: {exc}"
+                self._flushing = False
+                self._inflight = 0
+                self._cond.notify_all()
+            raise StorageIOError(self._failure) from exc
+        with self._cond:
+            self._file_size = offset + len(data)
+            self._inflight = 0
+            self.bytes_written += len(data)
+            if data:
+                self.flush_count += 1
+                self._written_lsn = end
+            if synced:
+                self.sync_count += 1
+                self._synced_lsn = self._written_lsn
+            self._flushing = False
+            self._cond.notify_all()
         faults.crash_point("wal.after_sync")
 
-    def sync(self) -> None:
-        """fsync the log if it has written-but-unsynced records.
+    def flush(self, *, sync: bool = True) -> None:
+        """Make everything appended so far durable (written, and fsynced if `sync`)."""
+        self.flush_through(self.next_lsn, sync=sync)
 
-        With synchronous commits this never has anything to do. With
-        synchronous=False it is what keeps the WAL rule true: it is called
-        before any page is written to the data file.
+    def sync(self) -> None:
+        """Make everything appended so far durable, if it is not already.
+
+        This is what keeps the WAL rule true: the buffer pool calls it before
+        writing any page to the data file, so no page can reach the disk ahead
+        of the log records that describe it. With nothing pending it returns at
+        once.
         """
-        if not self._unsynced or self._fd is None:
+        if self._fd is None:
             return
-        try:
-            os.fsync(self._fd)
-        except OSError as exc:
-            raise StorageIOError(f"cannot sync log {self._path}: {exc}") from exc
-        self._unsynced = False
+        self.flush_through(self.next_lsn, sync=True)
+
+    # ------------------------------------------------------------------ checkpoint
 
     def reset(self, base_lsn: int) -> None:
         """Empty the log. Called once every change it describes is safely in the data file.
@@ -274,10 +386,18 @@ class WalWriter:
         The header is rewritten and synced before the file is truncated. If the
         process dies in between, the leftover records carry LSNs below the new
         base and are ignored by read_wal().
+
+        Positions handed out before the reset remain valid: the new base is at
+        or beyond all of them, so a thread still waiting for one finds it
+        already durable.
         """
         fd = self._require_open()
-        if base_lsn < self._base_lsn:
-            raise ValueError("base LSN can only move forward")
+        with self._cond:
+            while self._flushing:
+                self._cond.wait()
+            if base_lsn < self._base_lsn:
+                raise ValueError("base LSN can only move forward")
+            self._flushing = True
         try:
             os.lseek(fd, 0, os.SEEK_SET)
             _write_all(fd, _pack_header(self._page_size, self._db_id, base_lsn))
@@ -286,16 +406,24 @@ class WalWriter:
             os.ftruncate(fd, WAL_HEADER_SIZE)
             os.fsync(fd)
         except OSError as exc:
+            with self._cond:
+                self._flushing = False
+                self._cond.notify_all()
             raise StorageIOError(f"cannot reset log {self._path}: {exc}") from exc
-        self._base_lsn = base_lsn
-        self._file_size = WAL_HEADER_SIZE
-        self._buffer.clear()
-        self._unsynced = False
+        with self._cond:
+            self._base_lsn = base_lsn
+            self._file_size = WAL_HEADER_SIZE
+            self._buffer.clear()
+            self._inflight = 0
+            self._written_lsn = self._synced_lsn = base_lsn
+            self._flushing = False
+            self._cond.notify_all()
 
     def close(self) -> None:
-        if self._fd is None:
-            return
-        fd, self._fd = self._fd, None
+        with self._cond:
+            if self._fd is None:
+                return
+            fd, self._fd = self._fd, None
         with contextlib.suppress(OSError):
             os.close(fd)
 

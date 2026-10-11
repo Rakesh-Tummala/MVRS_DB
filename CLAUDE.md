@@ -91,8 +91,10 @@ The C: drive is nearly full. Nothing from this project may be written to C:.
 * **Phase 8 done (2026-10-11):** the `VECTOR(n)` column type, exact top-k search (`ORDER BY v <-> [..] LIMIT k`), and an in-memory HNSW index (`VECTOR(n) HNSW`). See `docs/11-vector-search.md`. The index is not persisted; it is rebuilt on first use after each open.
 * **Aggregates and joins done (2026-10-11):** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `GROUP BY`, and two-table inner joins with aliases and qualified names; see `docs/12-aggregates-and-joins.md`.
 * **Delta log records done (2026-10-11):** page changes are logged as the bytes that changed; see `docs/05-wal-and-recovery.md` and D-056 to D-059. The log shrank up to 24 times, but commit speed did not change.
+* **Group commit done (2026-10-12):** commits that overlap share an `fsync`; see `docs/05-wal-and-recovery.md` and D-060 to D-063.
+* **Working through, in order (asked 2026-10-12, one at a time, each tested and committed locally, ask before pushing):** 1 group commit (done), 2 in-place B+ tree node edits, 3 persistent vector index, 4 outer joins and three-table joins, 5 MVCC.
 * **How I like work delivered:** in parts, stopping after each part for my go-ahead, and asking before each push.
-* **Not built:** outer joins, joins of three or more tables, `HAVING`, MVCC, group commit, in-place B+ tree node edits, B+ tree rebalancing on delete, a persistent vector index. See `docs/LIMITATIONS.md`.
+* **Not built:** outer joins, joins of three or more tables, `HAVING`, MVCC, in-place B+ tree node edits, B+ tree rebalancing on delete, a persistent vector index. See `docs/LIMITATIONS.md`.
 * **Next for me:** work through `docs/STUDY-GUIDE.md`, then write the case study in my own words.
 * **Docs:** `docs/01` to `docs/10`, `DECISIONS.md`, `LIMITATIONS.md`, `STUDY-GUIDE.md`. Benchmark report: `benchmarks/results/REPORT.md`.
 

@@ -42,7 +42,7 @@ A2 is the "no leaks, no double allocation" check that runs after every crash tes
 | B3 | `pin_count` is never negative |
 | B4 | A dirty page is written before its frame is reused |
 | B5 | A page enters the pool only after its checksum and page ID are verified |
-| B6 (Phase 4) | A page is written only when the log is durable up to its LSN |
+| B6 (Phase 4) | A page is written only when the log is durable through the commit record of the transaction that last changed it |
 | B7 (Phase 4) | A page modified by the active transaction is never written |
 
 ## B+ tree
@@ -80,6 +80,9 @@ A2 is the "no leaks, no double allocation" check that runs after every crash tes
 | W5 | For every page, on-disk `lsn` ≤ the LSN up to which the log is durable |
 | W6 | A `PAGE_DELTA` is applied only to a page whose LSN equals the delta's `prev_lsn` |
 | W7 | Every page written to the data file since the last checkpoint has a full `PAGE_IMAGE` in the log, committed before the first delta for that page |
+| W8 | `execute()` and `COMMIT` return only after the log is durable through the caller's own commit record |
+| W9 | A `SELECT` returns only after the log is durable through every commit record appended before it finished reading |
+| W10 | A transaction's records are appended to the log as one unit, so a batch written by another thread never contains half a transaction |
 
 ## Failure scenarios
 
@@ -101,7 +104,7 @@ A2 is the "no leaks, no double allocation" check that runs after every crash tes
 | Crash mid-transaction (Phase 4) | No `COMMIT` in the log | Transaction's effects absent after recovery |
 | Crash after commit, before pages flushed (Phase 4) | Page LSN behind the log | Redo restores them |
 | Torn or partial log tail (Phase 4) | Record CRC, length, LSN | Tail discarded |
-| `fsync` fails (Phase 4) | `OSError` | Commit fails; engine refuses writes until reopened |
+| `fsync` fails (Phase 4) | `OSError` | Every commit waiting on that batch fails; the engine refuses all statements, reads included, until reopened |
 | Page corrupt with no image in the log (Phase 4) | P1 when the page is next read, or by `Database.check()` | `ChecksumMismatchError`; recovery cannot repair it |
 | Log belongs to another database | `db_id` in the log header | `WalMismatchError` |
 | Log header damaged | Header CRC | `CorruptWalError` |

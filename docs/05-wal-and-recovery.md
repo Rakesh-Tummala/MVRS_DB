@@ -73,26 +73,56 @@ There is no BEGIN or ABORT record. A transaction's records are written together 
 
 **Finding the end of the log.** Reading stops at the first record that is incomplete, has an impossible length, fails its CRC, or carries the wrong LSN. Everything from there on is treated as never written. The stored LSN catches leftover records from before a checkpoint that have valid CRCs.
 
-**User-space buffer.** `append()` only adds to a buffer in the process. `flush()` hands the bytes to the OS and `fsync` makes them durable. A process killed before `flush()` loses them. Without this buffer, bytes passed to the OS would survive a process kill and a "written but not flushed" crash test would prove nothing.
+**User-space buffer.** `append()` only adds to a buffer in the process. Writing the bytes to the file and `fsync` make them durable. A process killed before then loses them. Without this buffer, bytes passed to the OS would survive a process kill and a "written but not flushed" crash test would prove nothing.
 
 ## Commit, step by step
 
+A commit has two moments: when it is **fixed in the order of commits**, and when it is **durable**. They used to be one moment. Separating them is what allows group commit.
+
 1. If the header changed, append a `HEADER` record.
 2. For each changed page, decide image or delta as described above. Set the page's `lsn` field to the LSN its record is about to get, then append the `PAGE_IMAGE` or `PAGE_DELTA` record. A page fetched for writing but left unchanged is skipped.
-3. Append a `COMMIT` record.
-4. `flush()` and `fsync` the log.
-5. Note which pages now have a full image in the log (only now, with the records durable), then tell the buffer pool the transaction is over. Its pages are now ordinary dirty pages.
+3. Append a `COMMIT` record. Steps 1 to 3 happen inside one `atomic_append()` block, so a batch written by another thread's flush never contains half a transaction.
+4. Mark the transaction committed in memory and tell the buffer pool the log position its pages must wait for (the end of the `COMMIT` record). **Release all locks.** The changes are now visible to other transactions.
+5. Wait until the log is durable through the `COMMIT` record. Only then does `execute()` or `COMMIT` return.
 
-The transaction is committed when step 4 returns. If the process dies before then, the transaction never happened.
+Nothing in steps 1 to 4 touches the disk.
 
-A checkpoint forgets which pages have an image, since it empties the log.
+If the process dies before step 5 finishes, the transaction may or may not survive, and either is correct: nobody was told it committed. A checkpoint forgets which pages have an image, since it empties the log.
+
+### Group commit
+
+Step 5 is where the time goes: an `fsync` takes milliseconds. The thread that needs the log made durable (the *leader*) writes everything in the buffer and calls `fsync` **without holding the log's lock**. Meanwhile other threads execute statements, append their own records to a fresh buffer, and wait. When the leader finishes, one waiter becomes the next leader and writes everything that piled up, with one `fsync`. Commits that arrive while an `fsync` is running cost one more `fsync` between them, not one each.
+
+This only works because step 4 releases the locks early. With a single writer, the old design held the writer slot until its own `fsync` returned, so no second commit could ever overlap it.
+
+Measured on the development machine (hard disk, `fsync` about 23 ms), durable single-row inserts into one table:
+
+| Threads | Commits per second | Commits per `fsync` | Median commit | 99th percentile |
+|---|---|---|---|---|
+| 1 | 36 | 1.0 | 22.8 ms | 67 ms |
+| 2 | 57 | 1.5 | 32.7 ms | 99 ms |
+| 4 | 88 | 2.5 | 44.3 ms | 78 ms |
+| 8 | 151 | 4.5 | 47.4 ms | 153 ms |
+| 16 | 268 | 8.5 | 58.9 ms | 154 ms |
+
+Throughput grows with the number of threads, up to 7.4 times at 16. **Latency grows too**: each commit now waits for a shared batch, not just its own `fsync`. This is the usual trade. A single thread is unaffected. Reproduce: `python benchmarks/group_commit.py`.
+
+### Early lock release
+
+Releasing locks at step 4, before the commit is durable, means other transactions can read and change data whose commit is not yet on disk. Three rules keep that safe:
+
+1. **Order.** A later transaction's records come after this one's in the log, and the log is only ever lost from its end. If this commit is lost, so is everything that read it. No transaction is acknowledged before every commit it could have seen is durable, because its own commit record lies behind them.
+2. **Readers wait.** A reader has no commit record of its own, so a `SELECT` waits for everything appended so far to become durable before it returns its rows. With nothing pending this is a comparison and costs nothing. (Otherwise a caller could act on data a crash then takes back.)
+3. **Pages wait.** See the next section.
 
 ## Write ordering (the WAL rule)
 
-A page may be written to the data file only when the log is durable up to that page's LSN. Two mechanisms enforce it:
+A page may be written to the data file only when the log is durable through the **commit record** of the transaction that last changed it, not merely through the page's own record. Otherwise a crash could leave a transaction half on disk with no commit record in the log, and recovery would discard it, leaving its pages behind.
 
-* A page of an uncommitted transaction is never written at all (no-steal).
-* Before writing any page, the buffer pool calls the log's `sync()`. With synchronous commits there is never anything left to sync. With `synchronous=False`, commits skip the `fsync`, and this call is what keeps a page from reaching disk ahead of its log record.
+Two mechanisms enforce it:
+
+* A page of a transaction still running is never written at all (no-steal).
+* A page of a committed transaction remembers the log position its transaction's `COMMIT` record ends at. Before the buffer pool writes the page, it waits until the log is durable to that position. The file header, which can describe any commit, waits for everything appended so far. Under group commit a page can be committed in memory and evictable while its commit record is still queued behind an `fsync`; this is what makes the pool wait for the log in that case.
 
 ## What COMMIT guarantees
 
@@ -108,9 +138,15 @@ It does **not** guarantee:
 * Anything about transactions after a damaged record in the middle of the log. A damaged record is indistinguishable from the end of the log, so later commits are lost.
 * That the data file is up to date. It may be arbitrarily behind the log.
 
-With `synchronous=False`, a commit survives a crash of the process but can be lost if the operating system crashes or the power fails. The database stays consistent either way.
+What other transactions may see is weaker than what the committer is told: they can see a commit slightly before it is durable (early lock release), but cannot be answered with it before it is.
 
-If writing or syncing the log fails, the commit fails, the in-memory changes are rolled back, and the engine refuses further writes with `EngineFailedError` until it is reopened. It does not retry: after a failed `fsync` the OS may have dropped the data while reporting success on the second attempt. Reopening runs recovery, which settles whether the commit made it.
+With `synchronous=False`, a commit survives a crash of the process but can be lost if the operating system crashes or the power fails. The database stays consistent either way. Group commit still batches the writes.
+
+### If the log cannot be written
+
+If writing or syncing the log fails, every commit waiting on that batch fails with `StorageIOError`. The engine then **stops completely**: every later statement, reads included, raises `EngineFailedError` until the database is reopened.
+
+Reads stop as well as writes because the in-memory state may now contain commits that never reached the disk, and other transactions have already seen them; there is nothing left to roll back to. Reopening runs recovery, which settles which commits survived. The engine does not retry: after a failed `fsync` the OS may have dropped the data while reporting success on the second attempt. (PostgreSQL, for the same reason, crashes and recovers on an `fsync` failure.)
 
 ## Torn pages
 
@@ -151,6 +187,10 @@ On open, before anything else reads the data file:
 
 58 tests in `tests/crash_recovery/` start a child process, kill it with `os._exit` at an injected point (`mvrs_db/faults.py`), reopen, and check durability, atomicity and `Database.check()`. Two workloads are used: row changes across two indexes, and creating and dropping tables. Delta logging is on in all of them, and one test asserts that recovery after a kill really did rebuild pages by replaying deltas.
 
+`tests/crash_recovery/test_crash_concurrent.py` does the same with six threads committing at once, each running two-statement transactions (insert a row, bump a counter). Fourteen kill points cover buffered-but-unwritten commits, a leader killed mid-write and mid-`fsync`, and kills during page eviction and checkpoints while commits are pending. After recovery every acknowledged commit must be present, each thread's counter must equal its row count (no half-applied transaction), its rows must form an unbroken run, and at most one extra transaction per thread may have survived. Making commits return before they are durable makes these tests fail.
+
+`tests/concurrency/test_group_commit.py` checks the mechanism with `fsync` slowed or held shut, so the interleavings are certain: commits that overlap share `fsync`s; a commit is durable when its call returns; a reader sees an unacknowledged commit but is not answered with it; a second writer proceeds while the first waits for the disk; an `fsync` failure fails every commit waiting on it; and a page whose commit is not yet durable cannot be evicted until it is. Disabling that last rule makes that test fail.
+
 `tests/unit/test_delta.py` covers the delta machinery on its own: finding changed ranges (including a property test over random edits), rejecting malformed records, resuming a page that reached disk partway through its history, rebuilding a torn page from its image plus later deltas, a later image superseding earlier records, refusing a delta that does not follow the page, and idempotence.
 
 | Crash point | Outcome required for the transaction in flight |
@@ -163,6 +203,7 @@ On open, before anything else reads the data file:
 | Start of, middle of, and end of a checkpoint | present |
 | Between rewriting the log header and truncating it | present |
 | Halfway through a page write, at four different moments (the 1st, 9th, 40th and 50th page write) | either, never half |
+| Six threads committing: buffered, mid-write, mid-`fsync`, after `fsync`, during eviction, during checkpoints | every acknowledged commit present; no half-applied transaction |
 | During database creation | a usable empty database |
 | During recovery (five points), twice in a row | same result as uninterrupted recovery |
 | Log truncated at 25 offsets; a byte flipped in each of the last 12 records | a whole number of transactions survives |

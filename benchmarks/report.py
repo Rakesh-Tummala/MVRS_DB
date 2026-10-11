@@ -518,6 +518,10 @@ def render(results: dict[str, Any], images: list[str]) -> str:
     if volume is not None:
         add(_log_volume_section(volume))
 
+    group = _load_json("group_commit.json")
+    if group is not None:
+        add(_group_commit_section(group["results"]))
+
     add("## Known bottlenecks\n")
     add(
         "- **Whole-page log images remain for new pages, for the first change to a page "
@@ -546,6 +550,54 @@ def render(results: dict[str, Any], images: list[str]) -> str:
         "is evenly spread.\n"
     )
     return "\n".join(parts)
+
+
+def _load_json(name: str) -> dict[str, Any] | None:
+    path = RESULTS_DIR / name
+    if not path.exists():
+        return None
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return data
+
+
+def _group_commit_section(results: list[dict[str, Any]]) -> str:
+    """Section 13: durable commit throughput as committing threads are added."""
+    base = results[0]["commits_per_second"]
+    lines = [
+        "## 13. Group commit\n",
+        "Each thread runs durable single-row `INSERT` transactions (fsync on) into one table "
+        "for a fixed time. With one thread every commit pays for its own fsync. With several, "
+        "commits that arrive while an fsync is running queue up and share the next one.\n",
+        table(
+            [
+                "Threads",
+                "Commits/s",
+                "Versus one thread",
+                "Commits per fsync",
+                "Median ms",
+                "p99 ms",
+            ],
+            [
+                [
+                    r["threads"],
+                    num(r["commits_per_second"]),
+                    f"{r['commits_per_second'] / base:.1f}x",
+                    f"{r['commits_per_fsync']:.1f}",
+                    num(r["median_ms"], 1),
+                    num(r["p99_ms"], 1),
+                ]
+                for r in results
+            ],
+        ),
+        "\nThroughput rises with the number of threads because each fsync now serves "
+        "several commits. **Latency rises as well**: a commit waits for a shared batch and "
+        "not only for its own fsync, so the median grows even as total throughput does. "
+        "A single thread is unaffected. The gain is bounded by how many commits overlap, "
+        "and the hard disk's fsync time sets the scale; a drive with fast syncs would "
+        "show a smaller gain.\n",
+        "Reproduce: `python benchmarks/group_commit.py`\n",
+    ]
+    return "\n".join(lines)
 
 
 def _load_log_volume() -> dict[str, Any] | None:

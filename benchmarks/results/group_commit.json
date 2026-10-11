@@ -1,0 +1,59 @@
+{
+  "environment": {
+    "os": "Windows 11 (build 10.0.26200)",
+    "python": "CPython 3.13.7",
+    "machine": "AMD64",
+    "logical_cpus": "8",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz",
+    "ram": "15.8 GB",
+    "drive": "W: HDD / RAID / TOSHIBA MQ04ABF100",
+    "defender_realtime": "on"
+  },
+  "results": [
+    {
+      "threads": 1,
+      "commits": 145,
+      "commits_per_second": 36.056840799553015,
+      "fsyncs": 145,
+      "commits_per_fsync": 1.0,
+      "median_ms": 22.848900000099093,
+      "p99_ms": 67.31890000082785
+    },
+    {
+      "threads": 2,
+      "commits": 228,
+      "commits_per_second": 56.68787937062844,
+      "fsyncs": 153,
+      "commits_per_fsync": 1.4901960784313726,
+      "median_ms": 32.67029999915394,
+      "p99_ms": 99.37309999804711
+    },
+    {
+      "threads": 4,
+      "commits": 357,
+      "commits_per_second": 88.05472751770964,
+      "fsyncs": 144,
+      "commits_per_fsync": 2.4791666666666665,
+      "median_ms": 44.33409999910509,
+      "p99_ms": 78.31479999731528
+    },
+    {
+      "threads": 8,
+      "commits": 612,
+      "commits_per_second": 150.51122909703398,
+      "fsyncs": 137,
+      "commits_per_fsync": 4.467153284671533,
+      "median_ms": 47.3560999998881,
+      "p99_ms": 153.365300000587
+    },
+    {
+      "threads": 16,
+      "commits": 1085,
+      "commits_per_second": 267.56305468651675,
+      "fsyncs": 128,
+      "commits_per_fsync": 8.4765625,
+      "median_ms": 58.87529999745311,
+      "p99_ms": 153.81199999683304
+    }
+  ]
+}

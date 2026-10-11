@@ -239,7 +239,7 @@ def test_transaction_larger_than_the_buffer_pool(tmp_path: Path) -> None:
         assert db.check().tables == {"t": 201}  # the kept row plus ids 1 to 200
 
 
-def test_failed_log_write_fails_the_commit_and_stops_further_writes(
+def test_failed_log_write_fails_the_commit_and_stops_the_engine(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "db.mvrs"
@@ -247,14 +247,18 @@ def test_failed_log_write_fails_the_commit_and_stops_further_writes(
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
     db.execute("INSERT INTO t VALUES (1)")
 
-    def failing_flush(*, sync: bool = True) -> None:
+    def failing_flush(target: int, *, sync: bool = True) -> None:
         raise StorageIOError("simulated: no space left on device")
 
-    monkeypatch.setattr(db._wal, "flush", failing_flush)
+    monkeypatch.setattr(db._wal, "flush_through", failing_flush)
     with pytest.raises(StorageIOError):
         db.execute("INSERT INTO t VALUES (2)")
 
-    assert db.execute("SELECT * FROM t").rows == [(1,)]  # reads still work, without row 2
+    # A commit's changes are visible in memory before they are durable, so once
+    # the log cannot be written nothing the engine says can be trusted: reads
+    # stop as well as writes, until the database is reopened.
+    with pytest.raises(EngineFailedError):
+        db.execute("SELECT * FROM t")
     with pytest.raises(EngineFailedError):
         db.execute("INSERT INTO t VALUES (3)")
     db.close()

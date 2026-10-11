@@ -394,6 +394,102 @@ def test_transaction_larger_than_the_pool_fails_cleanly(pool: BufferPool) -> Non
             assert marker(buf) == page_id
 
 
+# ---------------------------------------------------------------------- the WAL callback
+
+
+def test_each_page_write_is_preceded_by_the_commit_position_of_its_transaction(
+    disk: DiskManager,
+) -> None:
+    calls: list[tuple[str, int | None]] = []
+    pool = BufferPool(disk, CAPACITY, before_page_write=lambda pos: calls.append(("before", pos)))
+    real_write = disk.write_page
+
+    def recording_write(page_id: int, data: bytearray) -> None:
+        calls.append(("write", page_id))
+        real_write(page_id, data)
+
+    disk.write_page = recording_write  # type: ignore[method-assign]
+    first, second, third = make_pages(pool, 3)
+
+    # Pages changed in separate transactions carry that transaction's position.
+    pool.begin()
+    for page_id in (first, second):
+        with pool.page(page_id, write=True) as buf:
+            buf[PAGE_HEADER_SIZE] = 1
+    pool.commit(durable_after=500)
+    pool.begin()
+    with pool.page(third, write=True) as buf:
+        buf[PAGE_HEADER_SIZE] = 2
+    pool.commit(durable_after=900)
+    calls.clear()
+
+    for page_id in (first, second, third):
+        pool.flush_page(page_id)
+
+    waits = {call[1] for call in calls if call[0] == "before"}
+    assert 500 in waits and 900 in waits
+    # Every write is immediately preceded by the wait for its own position.
+    for index, call in enumerate(calls):
+        if call[0] == "write":
+            assert calls[index - 1][0] == "before"
+    sequence = [call for call in calls if call[0] == "before"]
+    assert [pos for _kind, pos in sequence] == [500, 500, 900]
+
+
+def test_pages_with_no_pending_commit_need_no_wait(disk: DiskManager) -> None:
+    positions: list[int | None] = []
+    pool = BufferPool(disk, CAPACITY, before_page_write=positions.append)
+    (page_id,) = make_pages(pool, 1)  # modified outside any transaction
+
+    pool.flush_page(page_id)
+
+    assert positions == [0]  # 0 means: nothing has to be durable first
+
+
+def test_the_header_waits_for_everything(disk: DiskManager) -> None:
+    positions: list[int | None] = []
+    pool = BufferPool(disk, CAPACITY, before_page_write=positions.append)
+    make_pages(pool, 2)
+
+    pool.flush_all()
+
+    assert positions[-1] is None  # the header may describe any commit
+    assert len(positions) == 3  # two pages, then the header
+
+
+def test_a_page_changed_again_gets_the_new_position(disk: DiskManager) -> None:
+    positions: list[int | None] = []
+    pool = BufferPool(disk, CAPACITY, before_page_write=positions.append)
+    (page_id,) = make_pages(pool, 1)
+    for position in (100, 250):
+        pool.begin()
+        with pool.page(page_id, write=True) as buf:
+            buf[PAGE_HEADER_SIZE] = position % 256
+        pool.commit(durable_after=position)
+
+    pool.flush_page(page_id)
+
+    assert positions == [250]
+
+
+def test_rollback_leaves_the_previous_position_alone(disk: DiskManager) -> None:
+    positions: list[int | None] = []
+    pool = BufferPool(disk, CAPACITY, before_page_write=positions.append)
+    (page_id,) = make_pages(pool, 1)
+    pool.begin()
+    with pool.page(page_id, write=True) as buf:
+        buf[PAGE_HEADER_SIZE] = 7
+    pool.commit(durable_after=300)
+    pool.begin()
+    with pool.page(page_id, write=True) as buf:
+        buf[PAGE_HEADER_SIZE] = 8
+    pool.rollback()
+
+    pool.flush_page(page_id)
+
+    assert positions == [300]  # the rolled-back change did not alter what the page waits for
+
+
 def test_transaction_misuse_raises(pool: BufferPool) -> None:
     with pytest.raises(TransactionError):
         pool.commit()

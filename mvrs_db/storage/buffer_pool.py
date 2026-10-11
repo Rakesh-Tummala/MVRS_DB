@@ -59,6 +59,10 @@ class Frame:
     data: bytearray
     pin_count: int = 0
     dirty: bool = False
+    # Log position that must be durable before this page may be written to the
+    # data file: the end of the commit record of the transaction that last
+    # changed it. 0 for a page whose changes are all already durable.
+    durable_after: int = 0
 
 
 @dataclass(slots=True)
@@ -75,10 +79,13 @@ class BufferPool:
         disk: DiskManager,
         capacity: int = config.DEFAULT_BUFFER_PAGES,
         *,
-        before_page_write: Callable[[], None] | None = None,
+        before_page_write: Callable[[int | None], None] | None = None,
     ) -> None:
-        """`before_page_write` is called before any page is written to the data
-        file. The database passes the log's sync function, which enforces the
+        """`before_page_write(position)` is called before any page is written to
+        the data file, with the log position that must be durable first (the
+        commit record of the transaction that last changed the page), or None
+        when everything appended so far must be durable (the file header). The
+        database passes a function that waits for the log, which enforces the
         WAL rule (B6) without this layer knowing that a log exists."""
         if capacity < config.MIN_BUFFER_PAGES:
             raise ValueError(f"buffer pool needs at least {config.MIN_BUFFER_PAGES} frames")
@@ -204,7 +211,7 @@ class BufferPool:
 
     def _write(self, page_id: int, frame: Frame) -> None:
         if self._before_page_write is not None:
-            self._before_page_write()
+            self._before_page_write(frame.durable_after)
         self._disk.write_page(page_id, frame.data)
         self.stats.page_writes += 1
         frame.dirty = False
@@ -228,7 +235,7 @@ class BufferPool:
                 if frame.dirty:
                     self._write(page_id, frame)
             if self._before_page_write is not None:
-                self._before_page_write()
+                self._before_page_write(None)  # the header may reflect any commit
             self._disk.flush_header()
 
     def dirty_page_count(self) -> int:
@@ -333,11 +340,21 @@ class BufferPool:
     def header_changed(self) -> bool:
         return self._txn is not None and self._disk.header != self._txn_header
 
-    def commit(self) -> None:
-        """End the transaction, keeping its changes. The pages stay dirty until flushed."""
+    def commit(self, durable_after: int = 0) -> None:
+        """End the transaction, keeping its changes. The pages stay dirty until flushed.
+
+        `durable_after` is the log position that must be durable before any of
+        these pages may be written to the data file (the end of the
+        transaction's commit record). The changes are visible to everyone from
+        now on, but a page must not reach the disk ahead of its commit record:
+        a crash would then leave a transaction half on disk that recovery,
+        finding no commit record, would discard.
+        """
         with self._latch:
             if self._txn is None:
                 raise TransactionError("no transaction is active")
+            for page_id in self._txn:
+                self._frames[page_id].durable_after = durable_after
             self._txn = None
             self._txn_header = None
 

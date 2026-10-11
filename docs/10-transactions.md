@@ -30,6 +30,8 @@ Strict two-phase locking with two kinds of resource:
 
 A transaction takes locks as it goes and releases all of them only when it ends. A join takes a shared lock on both of its tables, in name order.
 
+"Ends" means the moment its commit record is appended to the log, **not** the moment it is durable. The locks are released at the first and the committer then waits for the second. This is early lock release, and it is what lets group commit batch several commits into one `fsync`; see `05-wal-and-recovery.md`. A later transaction can therefore read or change data whose commit is still on its way to the disk. It cannot be answered with that data until it is durable: a writer's own commit record lies behind the one it read, and a `SELECT` waits for everything appended so far before it returns.
+
 **One writer at a time.** The first writing statement of a transaction takes the writer slot and keeps it until commit or rollback. This is not an optimisation waiting to be removed: page-image logging and page-level rollback are only correct if a page never holds uncommitted changes from two transactions.
 
 **Readers run concurrently** with each other and with a writer that is working on a different table.

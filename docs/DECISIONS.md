@@ -306,6 +306,29 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 * **Reason:** A delta is only meaningful against the exact page state it was computed from. A mismatch means the log and the page have come apart; stopping with an error is safer than building a page that never existed.
 * **Date:** 2026-10-11
 
+## D-060 — Group commit by letting waiting threads take turns as the writer of the log
+* **Decision:** Commits append to a shared in-memory buffer. The first thread that needs the log durable becomes the leader: it takes the whole buffer, writes it and calls `fsync` without holding the log's lock, and meanwhile others append to a fresh buffer and wait. The next waiter then leads, covering everything that piled up.
+* **Alternatives:** A dedicated flusher thread; deliberately delaying a commit for a few milliseconds to collect more (PostgreSQL's `commit_delay`).
+* **Reason:** No extra thread, no timer, and a lone commit pays no added delay. Batching happens only when commits genuinely overlap. Measured on a hard disk: 36 commits/s with one thread, 268 with 16, 8.5 commits per `fsync`. A delay would help low concurrency at the price of latency for everyone; not built.
+* **Date:** 2026-10-12
+
+## D-061 — Early lock release, with a durability wait for readers
+* **Decision:** A transaction releases its locks as soon as its commit record is appended, then waits for durability. A `SELECT` waits for everything appended so far before returning.
+* **Alternatives:** Hold locks until the commit is durable (then no two commits to the same table can ever overlap, and group commit gains nothing for the common case).
+* **Reason:** Overlap needs the locks free. Recovery stays consistent because the log is only lost from its end: a transaction that read an unlogged commit has its own commit record behind it. The wait for readers stops a caller from acting on data a crash could take back. Cost: a read that follows a commit by a few milliseconds may wait for its `fsync`.
+* **Date:** 2026-10-12
+
+## D-062 — A page waits for its transaction's commit record, not for its own log record
+* **Decision:** On commit the pool records, for each page the transaction changed, the log position its `COMMIT` record ends at. Before writing the page it waits for the log to be durable to that position.
+* **Alternatives:** Wait for everything appended (simple, correct, but any eviction waits for unrelated commits); wait for the page's own record (wrong).
+* **Reason:** Found while testing. A page's own record being durable is not enough: the page could reach the disk, the process could die before the `COMMIT` record did, and recovery would discard the transaction while its page stayed. A mutation test (disabling this wait) is caught by a deterministic test; the first version of that test was a randomised one that did not catch it.
+* **Date:** 2026-10-12
+
+## D-063 — After a log write failure the engine stops, reads included
+* **Alternatives:** Roll the failed commit back in memory and carry on (the earlier behaviour).
+* **Reason:** After early lock release other transactions may already have seen and built on the failed commit, so rolling back only that transaction is no longer possible. Stopping everything until the database is reopened and recovery decides is the only consistent answer.
+* **Date:** 2026-10-12
+
 ## D-019 — Optional dependencies only
 * **Alternatives:** Make `typer` a hard dependency.
 * **Reason:** The engine installs with no third-party packages. `typer`, test tools, `matplotlib` and `numpy` are extras.

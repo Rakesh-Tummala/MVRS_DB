@@ -230,6 +230,22 @@ What the numbers show:
 
 Reproduce: `python benchmarks/log_volume.py`
 
+## 13. Group commit
+
+Each thread runs durable single-row `INSERT` transactions (fsync on) into one table for a fixed time. With one thread every commit pays for its own fsync. With several, commits that arrive while an fsync is running queue up and share the next one.
+
+| Threads | Commits/s | Versus one thread | Commits per fsync | Median ms | p99 ms |
+|---|---|---|---|---|---|
+| 1 | 36 | 1.0x | 1.0 | 22.8 | 67.3 |
+| 2 | 57 | 1.6x | 1.5 | 32.7 | 99.4 |
+| 4 | 88 | 2.4x | 2.5 | 44.3 | 78.3 |
+| 8 | 151 | 4.2x | 4.5 | 47.4 | 153.4 |
+| 16 | 268 | 7.4x | 8.5 | 58.9 | 153.8 |
+
+Throughput rises with the number of threads because each fsync now serves several commits. **Latency rises as well**: a commit waits for a shared batch and not only for its own fsync, so the median grows even as total throughput does. A single thread is unaffected. The gain is bounded by how many commits overlap, and the hard disk's fsync time sets the scale; a drive with fast syncs would show a smaller gain.
+
+Reproduce: `python benchmarks/group_commit.py`
+
 ## Known bottlenecks
 
 - **Whole-page log images remain for new pages, for the first change to a page after a checkpoint, and for changes of more than half a page.** Deletes from an index hit the last case often (section 12).
