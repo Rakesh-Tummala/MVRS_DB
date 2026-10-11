@@ -24,6 +24,7 @@ from mvrs_db.planner.planner import plan_access, plan_select
 from mvrs_db.sql import ast
 from mvrs_db.storage.heap_file import RecordId
 from mvrs_db.storage.record import ColumnType, Value, encode_record
+from mvrs_db.vector.hnsw import SearchSettings
 
 
 @dataclass(slots=True)
@@ -77,12 +78,13 @@ def _constraint_name(column: Column) -> str:
 class Executor:
     def __init__(self, catalog: Catalog) -> None:
         self._catalog = catalog
+        self.vector_settings = SearchSettings()
 
     # ------------------------------------------------------------------ queries
 
     def select(self, statement: ast.Select) -> Result:
         table = self._catalog.get(statement.table)
-        plan, names = plan_select(table, statement)
+        plan, names = plan_select(table, statement, self.vector_settings)
         rows = [row for _rid, row in plan.rows()]
         return Result(names, rows, len(rows))
 
@@ -90,7 +92,7 @@ class Executor:
         inner = statement.statement
         table = self._catalog.get(inner.table)
         if isinstance(inner, ast.Select):
-            lines = explain(plan_select(table, inner)[0])
+            lines = explain(plan_select(table, inner, self.vector_settings)[0])
         else:
             access, _ordered = plan_access(table, inner.where)
             if isinstance(inner, ast.Update):
@@ -162,6 +164,7 @@ class Executor:
         rid = table.heap.insert(encode_record(schema.column_types, row))
         for position, key in keys:
             table.indexes[position].insert(key, rid)
+        table.vector_row_added(rid, row)
         table.rows_changed(1)
         return rid
 
@@ -218,6 +221,8 @@ class Executor:
                         )
 
             new_rid = table.heap.update(rid, encode_record(types, new_row))
+            table.vector_row_removed(rid)
+            table.vector_row_added(new_rid, new_row)
             for position, index in table.indexes.items():
                 old_value = old_row[position]
                 new_key = new_keys[position]
@@ -242,5 +247,6 @@ class Executor:
                 if value is not None:
                     index.delete(encode_key(schema.columns[position].type, value))
             table.heap.delete(rid)
+            table.vector_row_removed(rid)
         table.rows_changed(-len(targets))
         return Result(rowcount=len(targets))

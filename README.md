@@ -17,7 +17,7 @@ It stores tables in its own checksummed page file, indexes them with a B+ tree, 
 | Planner | Cost-based choice between a full scan and an index scan, sort elimination, top-N; constants fitted from measurements |
 | Durability | Write-ahead log of page images, redo-only recovery, checkpoints, torn-page repair |
 | Transactions | `BEGIN` / `COMMIT` / `ROLLBACK`, strict two-phase locking per table, one writer and many readers, deadlock detection |
-| Vectors | A `VECTOR(n)` column type and exact nearest-neighbour search: `ORDER BY embedding <-> [0.1, 0.2] LIMIT 5` (Euclidean) or `<=>` (cosine). No approximate index. |
+| Vectors | A `VECTOR(n)` column type; exact nearest-neighbour search with `ORDER BY embedding <-> [0.1, 0.2] LIMIT 5` (Euclidean) or `<=>` (cosine); and an optional in-memory HNSW index (`VECTOR(n) HNSW`) for approximate search |
 
 ## Install
 

@@ -42,12 +42,14 @@ from mvrs_db.execution.operators import (
     Sort,
     SortKey,
     TopN,
+    VectorIndexScan,
     VectorTopK,
 )
 from mvrs_db.planner import optimizer
 from mvrs_db.sql import ast
 from mvrs_db.storage.record import ColumnType, Value
 from mvrs_db.vector import distance
+from mvrs_db.vector.hnsw import SearchSettings
 
 _FLIPPED = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "=": "="}
 
@@ -211,7 +213,9 @@ def plan_access(
     return best, best_ordered
 
 
-def plan_select(table: Table, statement: ast.Select) -> tuple[Operator, tuple[str, ...]]:
+def plan_select(
+    table: Table, statement: ast.Select, vector_settings: SearchSettings | None = None
+) -> tuple[Operator, tuple[str, ...]]:
     """Build the operator tree for a SELECT and return it with its output column names."""
     schema = table.schema
     names: tuple[str, ...]
@@ -232,7 +236,8 @@ def plan_select(table: Table, statement: ast.Select) -> tuple[Operator, tuple[st
         ]
 
     if any(isinstance(item.column, ast.Distance) for item in statement.order_by):
-        return _plan_nearest(table, statement, items, names), names
+        settings = vector_settings or SearchSettings()
+        return _plan_nearest(table, statement, items, names, settings), names
 
     keys: list[SortKey] = [
         (expressions.column_position(schema, str(item.column)), item.descending)
@@ -301,13 +306,27 @@ def distance_spec(table: Table, node: ast.Distance) -> DistanceSpec:
 
 
 def _plan_nearest(
-    table: Table, statement: ast.Select, items: list[int | DistanceSpec], names: tuple[str, ...]
+    table: Table,
+    statement: ast.Select,
+    items: list[int | DistanceSpec],
+    names: tuple[str, ...],
+    settings: SearchSettings,
 ) -> Operator:
-    """ORDER BY a vector distance: scan the candidates, keep the k best.
+    """ORDER BY a vector distance.
 
-    WHERE is applied first, so the search is over the rows that pass the filter.
-    There is no vector index yet, which makes this exact and linear in the
-    number of candidate rows.
+    Two plans exist. The exact one scans the candidates and keeps the k best;
+    it is always available and always right. The approximate one asks the
+    column's HNSW index, and is used only when all of these hold:
+
+    * the column was declared with HNSW for the same distance the query uses
+    * there is a LIMIT, the order is nearest-first, and there is no WHERE
+      clause (the index knows nothing about other columns)
+    * the table has at least `min_rows` rows, since below that the exact scan
+      is quick anyway
+    * NumPy is installed and the index has not been switched off
+
+    Anything else falls back to the exact plan, so adding an index can make a
+    query approximate but never makes one fail.
     """
     if len(statement.order_by) != 1:
         raise SqlError("ORDER BY a vector distance cannot be combined with other sort keys")
@@ -323,6 +342,23 @@ def _plan_nearest(
     kept = child.est_rows if statement.limit is None else min(child.est_rows, statement.limit)
     plan.est_rows = float(kept)
     plan.cost = child.cost + optimizer.vector_scan_cost(child.est_rows, len(spec.query))
+
+    limit = statement.limit
+    if (
+        settings.use_index
+        and table.schema.columns[spec.position].ann == spec.metric
+        and statement.where is None
+        and limit is not None
+        and limit > 0
+        and not item.descending
+        and distance.numpy_available()
+        and table.ensure_stats()[0] >= settings.min_rows
+    ):
+        ef = max(settings.ef_search, limit)
+        assert isinstance(plan, VectorTopK)
+        plan = VectorIndexScan(table, spec, limit, ef, fallback=plan)
+        plan.est_rows = float(limit)
+        plan.cost = optimizer.vector_index_cost(ef, len(spec.query))
 
     project = Project(plan, items, names)
     project.est_rows, project.cost = plan.est_rows, plan.cost

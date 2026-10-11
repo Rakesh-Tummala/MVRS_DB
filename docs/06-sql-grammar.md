@@ -24,6 +24,7 @@ column_def    ::= ident type { constraint }
 type          ::= "INTEGER" | "INT" | "REAL" | "FLOAT" | "TEXT"
                 | "VECTOR" "(" integer ")"
 constraint    ::= "PRIMARY" "KEY" | "NOT" "NULL" | "UNIQUE"
+                | "HNSW" [ "COSINE" ]            -- VECTOR columns only
 
 drop_table    ::= "DROP" "TABLE" ident
 
@@ -90,6 +91,7 @@ Precedence, loosest to tightest: `OR`, `AND`, `NOT`, comparison. This falls out 
 * A vector literal is written `[0.1, 0.2, 0.3]`. Integers inside it are read as reals. It cannot be empty or nested.
 * Elements are stored as 32-bit floats, so a value read back is rounded to that precision.
 * A vector column cannot be `PRIMARY KEY` or `UNIQUE`, cannot appear in `ORDER BY`, and cannot be compared with `=`, `<` and so on. `IS NULL` and `IS NOT NULL` work.
+* `HNSW` after a vector column's type declares an approximate index for Euclidean distance; `HNSW COSINE` declares one for cosine distance. Queries do not change; the planner uses the index when it can, and `EXPLAIN` shows whether a search is exact or approximate.
 * Nearest-neighbour search: `ORDER BY column <-> [vector] LIMIT k` (Euclidean) or `<=>` (cosine). The same expression may appear in the `SELECT` list, where its column is named `distance`. A distance must be the only `ORDER BY` item and cannot be used in `WHERE`. Rows with no distance come last. See `11-vector-search.md`.
 
 **NULL (three-valued logic)**

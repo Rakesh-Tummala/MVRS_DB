@@ -209,6 +209,28 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 * **Reason:** The engine still installs with no third-party packages, and the pure-Python `distance()` doubles as the readable reference the fast paths are tested against. Both run in every search test.
 * **Date:** 2026-10-11
 
+## D-042 — The HNSW index lives in memory and is rebuilt from the table
+* **Decision:** Only the declaration (`HNSW` or `HNSW COSINE`) is stored, in the catalog. The graph is built on first use after each open, kept up to date by inserts, updates and deletes, and discarded by a rollback that changed it.
+* **Alternatives:** Store the graph in pages and log it like the B+ tree.
+* **Reason:** A persistent graph needs its own page layout, logging and recovery, which is a project of its own. An in-memory index cannot be corrupted by a crash. Cost: the first approximate query after each open rebuilds it at about 2 to 3 ms per row.
+* **Date:** 2026-10-11
+
+## D-043 — The planner uses the vector index by rule, and falls back to exact search
+* **Decision:** Index only when the column is declared for the query's distance, there is a `LIMIT`, nearest-first order, no `WHERE`, at least 1,000 rows, and NumPy. Otherwise exact.
+* **Alternatives:** Use the index with a `WHERE` clause and filter afterwards; choose by estimated cost.
+* **Reason:** Filtering after an approximate search can return fewer than k rows or miss matches entirely, and doing it properly is its own design problem. Rules are easy to state and to check in `EXPLAIN`. Adding an index can make a query approximate but never makes one fail.
+* **Date:** 2026-10-11
+
+## D-044 — Neighbours are chosen by the diversity heuristic, without filling spare slots
+* **Alternatives:** Link to the closest candidates only; apply the heuristic and then fill unused slots with the closest rejected candidates.
+* **Reason:** Measured on 5,000 vectors of 64 dimensions. Closest-only gave recall@10 of 0.64 at `ef_search` 100 on clustered data. The heuristic gave 0.99. Filling spare slots raised that to 1.00 but took 25 s to build against 11 s. With the index rebuilt on every open, build time decided it.
+* **Date:** 2026-10-11
+
+## D-045 — Default `ef_search` is 100
+* **Alternatives:** A lower default for speed.
+* **Reason:** Measured recall@10 at 100 was 0.87 to 0.97 across the three evaluation datasets, at 10 to 16 times the speed of exact search. At 50 recall fell to 0.75 to 0.85. The setting can be changed per database at any time.
+* **Date:** 2026-10-11
+
 ## D-019 — Optional dependencies only
 * **Alternatives:** Make `typer` a hard dependency.
 * **Reason:** The engine installs with no third-party packages. `typer`, test tools, `matplotlib` and `numpy` are extras.

@@ -56,6 +56,10 @@ SORT_ROW = 0.005  # per row, per log2(rows)
 # only one plan for such a query, so this number affects the cost EXPLAIN shows
 # and nothing else.
 VECTOR_ELEMENT = 0.002
+# Vectors measured per candidate kept during an HNSW search. An estimate for
+# EXPLAIN only; the planner's choice between exact and approximate search is
+# made by rules (see planner._plan_nearest), not by comparing costs.
+HNSW_FANOUT = 8
 
 DEFAULT_EQUALITY = 0.1
 DEFAULT_RANGE = 1 / 3
@@ -78,6 +82,14 @@ def sort_cost(rows: float) -> float:
 def vector_scan_cost(rows: float, dimensions: int) -> float:
     """Extra cost of measuring the distance from a query vector to every candidate row."""
     return rows * dimensions * VECTOR_ELEMENT
+
+
+def vector_index_cost(ef: int, dimensions: int) -> float:
+    """Rough cost of an HNSW search: it measures on the order of ef * HNSW_FANOUT vectors.
+
+    The point of the index is that this does not depend on the table size.
+    """
+    return ef * HNSW_FANOUT * dimensions * VECTOR_ELEMENT
 
 
 def range_selectivity(table: Table, column: int, key_range: KeyRange, rows: int) -> float:

@@ -54,6 +54,10 @@ class HeapFile:
     def first_page(self) -> int:
         return self._first_page
 
+    @property
+    def pool(self) -> BufferPool:
+        return self._pool
+
     def invalidate(self) -> None:
         """Forget the free-space map (after a rollback changed pages underneath it)."""
         self._free = None

@@ -72,6 +72,7 @@ from mvrs_db.storage.page import set_page_lsn
 from mvrs_db.storage.record import decode_record
 from mvrs_db.transactions.lock_manager import EXCLUSIVE, SHARED, LockManager
 from mvrs_db.transactions.transaction import Transaction
+from mvrs_db.vector.hnsw import SearchSettings
 
 _PAGE_ID = struct.Struct("<I")
 _WRITER = "#writer"  # the single writer slot; '#' cannot appear in a table name
@@ -300,6 +301,11 @@ class Database:
     def wal_size(self) -> int:
         return self._wal.size
 
+    @property
+    def vector(self) -> SearchSettings:
+        """Vector search switches: use_index, ef_search, min_rows. Change them at any time."""
+        return self._executor.vector_settings
+
     def connect(self) -> Connection:
         """A new connection. Give each thread its own."""
         self._require_open()
@@ -384,6 +390,7 @@ class Database:
                         self._wal.discard_buffer()
                         self._rollback_pages()
                         raise
+                    self._catalog.transaction_committed()
                     if self._wal.size > self._checkpoint_bytes:
                         self._checkpoint()
                 else:

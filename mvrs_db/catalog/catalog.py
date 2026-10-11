@@ -28,7 +28,11 @@ from mvrs_db.sql import ast
 from mvrs_db.storage import heap_page
 from mvrs_db.storage.buffer_pool import BufferPool
 from mvrs_db.storage.heap_file import HeapFile, RecordId
-from mvrs_db.storage.record import ColumnType
+from mvrs_db.storage.record import ColumnType, Value, raw_vector
+from mvrs_db.vector.hnsw import HnswIndex
+
+# Rebuild an in-memory vector index once this share of its entries are deleted.
+MAX_DEAD_FRACTION = 0.3
 
 
 @dataclass(slots=True)
@@ -42,6 +46,55 @@ class Table:
     # Row count for the planner; None until first needed, then kept up to date.
     row_count: int | None = None
     _stats_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # Approximate vector indexes that have been built, by column position. They
+    # exist only in memory: built on first use, updated as rows change, and
+    # discarded with this Table object when a rollback reloads the catalog.
+    _ann: dict[int, HnswIndex] = field(default_factory=dict, repr=False)
+    _ann_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # True while the running transaction has changed a built index. Such an
+    # index cannot survive a rollback, because it describes rows that are gone.
+    _ann_changed: bool = False
+
+    def ann_index(self, position: int) -> HnswIndex:
+        """The HNSW index on a vector column, building it from the table if needed.
+
+        Building reads every row, so the first approximate query after opening
+        the database (or after a rollback) pays for it. An index in which many
+        entries have been deleted is rebuilt the same way.
+        """
+        with self._ann_lock:
+            index = self._ann.get(position)
+            if index is None or index.dead_fraction > MAX_DEAD_FRACTION:
+                column = self.schema.columns[position]
+                index = HnswIndex(column.dimension, column.ann)
+                types = self.schema.column_types
+                for rid, record in self.heap.scan():
+                    raw = raw_vector(types, record, position, column.dimension)
+                    if raw is not None:
+                        index.add(rid, raw)
+                self._ann[position] = index
+                # Built while a write transaction is open, the index may hold
+                # rows that a rollback will remove. Treat it as changed, so a
+                # rollback discards it; a commit clears the mark.
+                if self.heap.pool.in_transaction:
+                    self._ann_changed = True
+            return index
+
+    def ann_built(self, position: int) -> bool:
+        return position in self._ann
+
+    def vector_row_added(self, rid: RecordId, row: tuple[Value, ...]) -> None:
+        """Keep built vector indexes in step with an inserted row."""
+        for position, index in self._ann.items():
+            vector = row[position]
+            if vector is not None:
+                index.add(rid, vector)  # type: ignore[arg-type]
+                self._ann_changed = True
+
+    def vector_row_removed(self, rid: RecordId) -> None:
+        for index in self._ann.values():
+            if index.remove(rid):
+                self._ann_changed = True
 
     def ensure_stats(self) -> tuple[int, int]:
         """(rows, heap pages). Rows are counted once by walking the heap, then maintained."""
@@ -84,11 +137,24 @@ class Catalog:
                 schema = TableSchema.decode(record)
                 if schema.name in tables:
                     raise CorruptCatalogError(f"C1: table {schema.name!r} is defined twice")
-                tables[schema.name] = self._open_table(schema, rid)
+                table = self._open_table(schema, rid)
+                # A reload happens after a rollback. A built vector index is
+                # expensive to rebuild, so keep it when the rolled-back
+                # transaction did not touch it and the table is unchanged.
+                previous = self._tables.get(schema.name)
+                if previous is not None and previous.schema == schema and not previous._ann_changed:
+                    table._ann = previous._ann
+                tables[schema.name] = table
                 next_id = max(next_id, schema.table_id + 1)
             self._heap = heap
             self._tables = tables
             self._next_table_id = next_id
+
+    def transaction_committed(self) -> None:
+        """The changes made to in-memory vector indexes are now permanent."""
+        with self._lock:
+            for table in self._tables.values():
+                table._ann_changed = False
 
     def _open_table(self, schema: TableSchema, rid: RecordId) -> Table:
         indexes = {
@@ -144,6 +210,10 @@ class Catalog:
 
             for definition in definitions:
                 if definition.type_name != "VECTOR":
+                    if definition.hnsw:
+                        raise CatalogError(
+                            f"column {definition.name}: HNSW can only index a VECTOR column"
+                        )
                     continue
                 if definition.primary_key or definition.unique:
                     raise CatalogError(
@@ -168,6 +238,7 @@ class Catalog:
                         d.primary_key,
                         d.unique,
                         dimension=d.dimension,
+                        ann=d.hnsw,
                     )
                     for d in definitions
                 ),

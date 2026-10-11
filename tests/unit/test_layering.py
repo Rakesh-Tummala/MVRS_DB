@@ -15,7 +15,15 @@ ALLOWED_INTERNAL_IMPORTS = {
     "recovery": BASE | {"mvrs_db.storage", "mvrs_db.recovery"},
     "sql": BASE | {"mvrs_db.sql"},
     # The catalog uses the CREATE TABLE syntax node as its input description.
-    "catalog": BASE | {"mvrs_db.storage", "mvrs_db.index", "mvrs_db.sql", "mvrs_db.catalog"},
+    # A table owns its in-memory vector indexes, hence mvrs_db.vector.
+    "catalog": BASE
+    | {
+        "mvrs_db.storage",
+        "mvrs_db.index",
+        "mvrs_db.sql",
+        "mvrs_db.catalog",
+        "mvrs_db.vector",
+    },
     "transactions": BASE | {"mvrs_db.transactions"},
     # Distance functions depend on nothing in the engine, so that vector
     # search cannot affect relational correctness.

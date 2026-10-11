@@ -8,7 +8,8 @@ A catalog record describes one table:
     per column: [name_len u8][name][type u8][flags u8][index_root u32]
                 [dimension u16]   only when the type is VECTOR
 
-flags: bit 0 = NOT NULL, bit 1 = PRIMARY KEY, bit 2 = UNIQUE.
+flags: bit 0 = NOT NULL, bit 1 = PRIMARY KEY, bit 2 = UNIQUE,
+       bit 3 = HNSW index for Euclidean distance, bit 4 = HNSW index for cosine.
 index_root is the root page of the column's B+ tree, or 0 if it has no index.
 dimension is the n of VECTOR(n). Storing it only for vector columns means
 records written before vectors existed still decode unchanged.
@@ -34,6 +35,9 @@ _U16 = struct.Struct("<H")
 _NOT_NULL = 1
 _PRIMARY_KEY = 2
 _UNIQUE = 4
+_HNSW_L2 = 8
+_HNSW_COSINE = 16
+_ANN_FLAG = {"": 0, "l2": _HNSW_L2, "cosine": _HNSW_COSINE}
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +49,10 @@ class Column:
     unique: bool = False
     index_root: int = 0
     dimension: int = 0  # n for VECTOR(n); 0 for every other type
+    # "" for no approximate index, otherwise the distance its HNSW graph is
+    # built for: "l2" or "cosine". Only the declaration is stored; the graph
+    # itself lives in memory.
+    ann: str = ""
 
     @property
     def indexed(self) -> bool:
@@ -86,6 +94,7 @@ class TableSchema:
                 (_NOT_NULL if column.not_null else 0)
                 | (_PRIMARY_KEY if column.primary_key else 0)
                 | (_UNIQUE if column.unique else 0)
+                | _ANN_FLAG[column.ann]
             )
             parts.append(bytes((len(column_name),)))
             parts.append(column_name)
@@ -129,6 +138,7 @@ class TableSchema:
                         unique=bool(flags & _UNIQUE),
                         index_root=index_root,
                         dimension=dimension,
+                        ann=_decode_ann(flags, column_type, column_name),
                     )
                 )
         except (struct.error, ValueError, UnicodeDecodeError, IndexError) as exc:
@@ -136,6 +146,15 @@ class TableSchema:
         if position != len(data):
             raise CorruptCatalogError("catalog record has unexpected trailing bytes")
         return cls(table_id, name, first_heap_page, tuple(columns))
+
+
+def _decode_ann(flags: int, column_type: ColumnType, name: str) -> str:
+    wanted = flags & (_HNSW_L2 | _HNSW_COSINE)
+    if wanted == 0:
+        return ""
+    if column_type is not ColumnType.VECTOR or wanted == (_HNSW_L2 | _HNSW_COSINE):
+        raise CorruptCatalogError(f"column {name!r} has invalid vector index flags")
+    return "l2" if wanted == _HNSW_L2 else "cosine"
 
 
 def _read_name(data: bytes, position: int) -> tuple[str, int]:

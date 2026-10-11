@@ -1,0 +1,158 @@
+{
+  "environment": {
+    "os": "Windows 11 (build 10.0.26200)",
+    "python": "CPython 3.13.7",
+    "machine": "AMD64",
+    "logical_cpus": "8",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz",
+    "ram": "15.8 GB",
+    "drive": "W: HDD / RAID / TOSHIBA MQ04ABF100",
+    "defender_realtime": "on"
+  },
+  "results": [
+    {
+      "dataset": "clustered, Euclidean",
+      "operator": "<->",
+      "rows": 10000,
+      "dimensions": 64,
+      "queries": 100,
+      "k": 10,
+      "exact_median_ms": 23.72659999946336,
+      "index_build_seconds": 17.55418439999994,
+      "points": [
+        {
+          "ef_search": 10,
+          "recall": 0.562,
+          "median_ms": 0.6082499999138236,
+          "speedup": 39.00797369967107
+        },
+        {
+          "ef_search": 20,
+          "recall": 0.708,
+          "median_ms": 0.7079500005602313,
+          "speedup": 33.51451370956633
+        },
+        {
+          "ef_search": 50,
+          "recall": 0.852,
+          "median_ms": 1.0596500001156528,
+          "speedup": 22.39097815021354
+        },
+        {
+          "ef_search": 100,
+          "recall": 0.968,
+          "median_ms": 1.5163000007305527,
+          "speedup": 15.64769503926129
+        },
+        {
+          "ef_search": 200,
+          "recall": 0.995,
+          "median_ms": 2.5454500000705593,
+          "speedup": 9.321180930211028
+        },
+        {
+          "ef_search": 400,
+          "recall": 1.0,
+          "median_ms": 4.217449999941891,
+          "speedup": 5.625816547864295
+        }
+      ]
+    },
+    {
+      "dataset": "clustered, cosine",
+      "operator": "<=>",
+      "rows": 10000,
+      "dimensions": 64,
+      "queries": 100,
+      "k": 10,
+      "exact_median_ms": 22.961299999678886,
+      "index_build_seconds": 22.943727000000763,
+      "points": [
+        {
+          "ef_search": 10,
+          "recall": 0.492,
+          "median_ms": 0.6721499999002845,
+          "speedup": 34.1609759772153
+        },
+        {
+          "ef_search": 20,
+          "recall": 0.599,
+          "median_ms": 0.7745500001874461,
+          "speedup": 29.644696913203926
+        },
+        {
+          "ef_search": 50,
+          "recall": 0.748,
+          "median_ms": 1.236649999555084,
+          "speedup": 18.56733918888917
+        },
+        {
+          "ef_search": 100,
+          "recall": 0.873,
+          "median_ms": 1.9010000000889704,
+          "speedup": 12.078537611049056
+        },
+        {
+          "ef_search": 200,
+          "recall": 0.986,
+          "median_ms": 2.963349999845377,
+          "speedup": 7.748426612069776
+        },
+        {
+          "ef_search": 400,
+          "recall": 0.999,
+          "median_ms": 4.666150000048219,
+          "speedup": 4.9208233767542
+        }
+      ]
+    },
+    {
+      "dataset": "uniform random, Euclidean",
+      "operator": "<->",
+      "rows": 10000,
+      "dimensions": 64,
+      "queries": 100,
+      "k": 10,
+      "exact_median_ms": 22.428250000302796,
+      "index_build_seconds": 31.827192100000502,
+      "points": [
+        {
+          "ef_search": 10,
+          "recall": 0.363,
+          "median_ms": 0.7133499998417392,
+          "speedup": 31.440737373349172
+        },
+        {
+          "ef_search": 20,
+          "recall": 0.555,
+          "median_ms": 0.8821000001262291,
+          "speedup": 25.425972108710233
+        },
+        {
+          "ef_search": 50,
+          "recall": 0.789,
+          "median_ms": 1.3564500000029511,
+          "speedup": 16.534520255264848
+        },
+        {
+          "ef_search": 100,
+          "recall": 0.917,
+          "median_ms": 2.208600000358274,
+          "speedup": 10.15496241812213
+        },
+        {
+          "ef_search": 200,
+          "recall": 0.983,
+          "median_ms": 3.702050000356394,
+          "speedup": 6.058332544980117
+        },
+        {
+          "ef_search": 400,
+          "recall": 0.997,
+          "median_ms": 6.355949999942823,
+          "speedup": 3.5287014530486487
+        }
+      ]
+    }
+  ]
+}

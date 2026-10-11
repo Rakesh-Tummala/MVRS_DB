@@ -6,12 +6,11 @@ Code: `mvrs_db/vector/distance.py`, `VectorTopK` in `mvrs_db/execution/operators
 
 A model can turn a piece of text, an image or a product into an *embedding*: a list of a few hundred numbers, arranged so that similar things get nearby lists. "Find the documents most like this one" then becomes "find the stored vectors closest to this vector". That is nearest-neighbour search, and it is what vector databases do.
 
-MVRS_DB supports it in two steps so far:
+MVRS_DB supports it in three layers:
 
 1. **A column type**, `VECTOR(n)`, that stores `n` 32-bit floats per row.
 2. **Exact search**: `ORDER BY column <-> [query] LIMIT k` returns the `k` closest rows by measuring every row.
-
-An approximate index, which trades a little accuracy for a lot of speed, is not built.
+3. **An approximate index** (HNSW), declared on the column, that answers the same query by looking at a small part of the table. It is held in memory only.
 
 ## Syntax
 
@@ -92,12 +91,112 @@ Searching is now *faster* than `SELECT id FROM e`, because an ordinary scan deco
 
 A query with a `WHERE` clause uses the decoded NumPy path. Before the raw path existed, that path was measured on the same data at 68, 298 and 1,350 ms for 16, 128 and 768 dimensions: only 1.3 to 1.5 times faster than pure Python. Making the filter work on undecoded rows would close that gap and is not done.
 
+## The approximate index (HNSW)
+
+Code: `mvrs_db/vector/hnsw.py`, `VectorIndexScan` in `operators.py`, `Table.ann_index` in `catalog/catalog.py`. Tests: `tests/integration/test_vector_index.py`. Evaluation: `benchmarks/vector_recall.py`.
+
+Exact search is linear in the table size. An approximate index gives up the guarantee of finding *all* of the true nearest rows in exchange for looking at far fewer of them.
+
+### Declaring and using it
+
+```sql
+CREATE TABLE docs (
+    id INTEGER PRIMARY KEY,
+    embedding VECTOR(64) HNSW          -- index for <-> (Euclidean)
+);
+-- or:  embedding VECTOR(64) HNSW COSINE   -- index for <=> (cosine)
+
+SELECT id FROM docs ORDER BY embedding <-> [ ... ] LIMIT 10;
+```
+
+There is nothing to add to the query. The planner uses the index when **all** of these hold, and otherwise runs the exact search:
+
+| Condition | Why |
+|---|---|
+| The column is declared `HNSW` for the distance the query uses | A graph is built for one distance |
+| The query has a `LIMIT` and asks for nearest first | The index finds the nearest k; it cannot find the farthest or order everything |
+| There is no `WHERE` clause | The index knows nothing about other columns |
+| The table has at least 1,000 rows (`db.vector.min_rows`) | Below that the exact scan is quick and always right |
+| NumPy is installed and `db.vector.use_index` is true | |
+
+So declaring an index can make a query approximate, but it never makes a query fail, and `EXPLAIN` always says which search will run:
+
+```
+VectorIndexScan(10 nearest by embedding <-> [0.1, 0.2, ... 64 numbers]; HNSW, approximate, ef=100)
+```
+
+Three settings on an open database, changeable at any time:
+
+```python
+db.vector.use_index = False  # force exact search (this is how ground truth is obtained)
+db.vector.ef_search = 200  # more candidates: higher recall, slower
+db.vector.min_rows = 0  # use the index even on small tables
+```
+
+The `distance` column, if selected, is always computed exactly for the rows returned.
+
+### How HNSW works
+
+Each vector is a node in a graph, linked to a handful of nearby vectors. Searching means starting at some node and repeatedly moving to whichever neighbour is closer to the query.
+
+One flat graph would need many small steps, so the graph has layers, like a skip list. Every node is in layer 0. A node is also in layer 1 with a small probability, in layer 2 with a smaller one, and so on. The few nodes in the top layers have long links. A search starts at the top, covers a lot of ground in a few hops, drops a layer each time it can get no closer, and finishes with a careful search in the dense bottom layer.
+
+| Parameter | Value | Effect |
+|---|---|---|
+| `M` | 16 | Links per node (32 in layer 0). More links: better recall, more memory, slower build. |
+| `ef_construction` | 100 | Candidates examined when inserting a node. |
+| `ef_search` | 100 by default | Candidates kept while searching layer 0. The recall/speed dial at query time. Never less than `k`. |
+
+Which neighbours a node links to matters as much as how many. Linking to simply the closest ones fails on clustered data: every link stays inside the cluster. The rule used here keeps a candidate only if it is closer to the node than to every neighbour already chosen, which spreads links in different directions. The docstring of `HnswIndex._select` has the measurements behind that choice.
+
+### Measured recall and speed
+
+`recall@10` is the share of the true 10 nearest rows that the index returned, with the exact search as ground truth. 10,000 rows of 64 dimensions, 100 queries, median latency per query including SQL parsing, on the development machine:
+
+| Dataset | Exact | `ef_search` 10 | 50 | 100 | 200 | 400 |
+|---|---|---|---|---|---|---|
+| Clustered, Euclidean: recall | 1.000 | 0.562 | 0.852 | 0.968 | 0.995 | 1.000 |
+| latency | 23.7 ms | 0.61 ms | 1.06 ms | 1.52 ms | 2.55 ms | 4.22 ms |
+| Clustered, cosine: recall | 1.000 | 0.492 | 0.748 | 0.873 | 0.986 | 0.999 |
+| latency | 23.0 ms | 0.67 ms | 1.24 ms | 1.90 ms | 2.96 ms | 4.67 ms |
+| Uniform random, Euclidean: recall | 1.000 | 0.363 | 0.789 | 0.917 | 0.983 | 0.997 |
+| latency | 22.4 ms | 0.71 ms | 1.36 ms | 2.21 ms | 3.70 ms | 6.36 ms |
+
+Building the index took 18, 23 and 32 seconds for the three datasets. Reproduce with `python benchmarks/vector_recall.py`; the raw numbers are in `benchmarks/results/vector_recall.json`.
+
+Reading the table:
+
+* At the default `ef_search` of 100 the index is 10 to 16 times faster than exact search and finds 87% to 97% of the true neighbours.
+* Recall rises with `ef_search` and so does latency. Near-perfect recall costs about a quarter of the speed-up.
+* Uniform random data is the hard case: with no structure, "nearby" means little, and every such index struggles.
+* A low `ef_search` is fast and wrong. 10 misses about half the true neighbours.
+* These recall figures are lower than a tuned library such as hnswlib would report. This implementation is simplified and has not been tuned.
+
+### Where it misses
+
+The search is greedy: it only explores outward from the best candidates it has found. If a query falls between two clusters, the search can settle in one of them, fill its candidate list there, and never visit the other, even though some true neighbours are in it. Raising `ef_search` widens the candidate list until the other cluster is reached. With `ef_search` equal to the number of rows the search is exhaustive and exact, which the tests use to confirm the graph is fully connected.
+
+### In memory only
+
+The index is never written to disk. This was a deliberate cut.
+
+* **It is rebuilt on first use** after the database is opened: the first approximate query reads the whole table and inserts every vector, at about 2 to 3 ms per row. For 10,000 rows that is 20 to 30 seconds, paid by that one query. `EXPLAIN` shows `index not built yet` beforehand.
+* **Inserts get slower once it is built**, because each new row is also inserted into the graph.
+* **A rollback discards it** if the rolled-back transaction changed it, since it would describe rows that no longer exist. It is then rebuilt on next use. An index the transaction did not touch is kept.
+* **Deletes mark graph nodes dead.** Dead nodes still route searches but are never returned. When more than 30% of an index is dead it is rebuilt.
+* **It needs no logging or recovery**, which is the point: a crash cannot corrupt something that is rebuilt from the table.
+
+A persistent index would store the graph in pages and log changes to it like the B+ tree. That is a much larger piece of work and is not done.
+
 ## Cost and limits
 
-* **Exact means linear.** Every candidate row is measured, so time grows with rows × dimensions. That is fine for tens of thousands of rows and too slow for millions. An approximate index (HNSW, IVF) is the standard answer and is not built.
+* **Exact means linear.** Every candidate row is measured, so time grows with rows × dimensions.
+* **Approximate means approximate.** The index can miss true neighbours, and how many depends on the data and on `ef_search`. Use `db.vector.use_index = False` when the exact answer matters.
+* **The index is rebuilt after every open**, on the first query that uses it.
+* **A filtered search is always exact.** Any `WHERE` clause bypasses the index and also the fast exact path.
 * **A vector must fit in one record.** 768 dimensions fits the default 4 KiB page; 1,536 needs `page_size=8192`.
-* **Each vector is 4 bytes per dimension**, uncompressed.
-* **No index.** There is nothing to maintain on insert or update, and nothing to make a search sub-linear.
+* **Each vector is 4 bytes per dimension**, uncompressed, plus the index's own copy in memory once built.
+* **The index needs NumPy.** Without it every search is exact and in pure Python.
 
 ## What to be ready to explain
 
@@ -107,3 +206,8 @@ A query with a `WHERE` clause uses the decoded NumPy path. Before the raw path e
 * Why exact search is the baseline an approximate index is judged against (recall = how many of the true top `k` the index returns).
 * Why NumPy alone barely helped here, and what the raw path does differently.
 * Why the search can beat a plain table scan.
+* How HNSW's layers resemble a skip list, and what each of `M`, `ef_construction` and `ef_search` controls.
+* What recall is, how it was measured here, and why it is below 1.
+* A query for which a greedy graph search misses the true neighbours, and what fixes it.
+* Why this index is not persisted, what that costs, and what persisting it would require.
+* Why a `WHERE` clause disables the index, and what "pre-filtering" versus "post-filtering" would mean.

@@ -394,6 +394,48 @@ def _distance_order(item: tuple[float, int, Any]) -> tuple[float, int]:
     return item[0], item[1]
 
 
+class VectorIndexScan(Operator):
+    """Approximate nearest-neighbour search through the column's HNSW index.
+
+    The index returns record IDs, nearest first; only those rows are read. The
+    result is approximate: it usually contains the true k nearest but can miss
+    some. `ef` is how many candidates the search keeps; raising it finds more
+    of the true neighbours and takes longer.
+
+    If the index holds fewer than k vectors, the exact scan runs instead. That
+    keeps small and sparse tables right, including the rule that rows with no
+    distance are returned last.
+    """
+
+    def __init__(
+        self, table: Table, spec: DistanceSpec, limit: int, ef: int, fallback: VectorTopK
+    ) -> None:
+        self.table = table
+        self.spec = spec
+        self.limit = limit
+        self.ef = ef
+        self.fallback = fallback
+
+    def rows(self) -> Iterator[Entry]:
+        index = self.table.ann_index(self.spec.position)
+        # The index stores whatever key it was given; here that is always a record ID.
+        rids: list[Any] = index.search(self.spec.query, self.limit, self.ef)
+        if len(rids) < self.limit:
+            yield from self.fallback.rows()
+            return
+        types = self.table.schema.column_types
+        heap = self.table.heap
+        for rid in rids:
+            yield rid, decode_record(types, heap.read(rid))
+
+    def describe(self) -> str:
+        built = "" if self.table.ann_built(self.spec.position) else ", index not built yet"
+        return (
+            f"VectorIndexScan({self.limit} nearest by {self.spec.describe()}; "
+            f"HNSW, approximate, ef={self.ef}{built})"
+        )
+
+
 class Project(Operator):
     """Keep the requested columns. An item is a column position or a distance to compute."""
 

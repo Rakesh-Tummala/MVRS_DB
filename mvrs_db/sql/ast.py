@@ -68,6 +68,7 @@ class ColumnDef:
     not_null: bool = False
     unique: bool = False
     dimension: int = 0  # n in VECTOR(n); 0 for every other type
+    hnsw: str = ""  # "", "l2" or "cosine": an approximate index on a vector column
 
 
 @dataclass(frozen=True, slots=True)

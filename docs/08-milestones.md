@@ -12,7 +12,7 @@
 | 5 Transactions | Done with table locks and one writer. MVCC (stretch) not attempted. |
 | 6 Optimiser | Done: cost-based, constants fitted from measurements. |
 | 7 Benchmarks | Done: `benchmarks/results/REPORT.md`. |
-| 8 Vector search | Parts 1 and 2 of 3 done: the `VECTOR(n)` column type and exact top-k search. The approximate index (part 3) is not built. |
+| 8 Vector search | Done: the `VECTOR(n)` column type, exact top-k search, and a simplified in-memory HNSW index evaluated for recall against the exact search. The index is not persisted. |
 
 The phases were built in one pass rather than one gated milestone at a time, and all code, including the parts marked "you" below, was written by Claude at my request. `STUDY-GUIDE.md` is the plan for learning it afterwards. The table below is the original plan, kept for the acceptance criteria.
 

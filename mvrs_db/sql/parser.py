@@ -174,8 +174,13 @@ class _Parser:
             dimension = int(size.value)
             self._expect_symbol(")")
         primary_key = not_null = unique = False
+        hnsw = ""
         while True:
-            if self._accept_keyword("PRIMARY"):
+            if self._accept_keyword("HNSW"):
+                # HNSW builds the approximate index for Euclidean distance;
+                # HNSW COSINE builds it for cosine distance.
+                hnsw = "cosine" if self._accept_keyword("COSINE") else "l2"
+            elif self._accept_keyword("PRIMARY"):
                 self._expect_keyword("KEY")
                 primary_key = True
             elif self._accept_keyword("NOT"):
@@ -186,7 +191,7 @@ class _Parser:
             else:
                 break
         return ast.ColumnDef(
-            name, _TYPE_NAMES[token.value], primary_key, not_null, unique, dimension
+            name, _TYPE_NAMES[token.value], primary_key, not_null, unique, dimension, hnsw
         )
 
     def _drop_table(self) -> ast.DropTable:
