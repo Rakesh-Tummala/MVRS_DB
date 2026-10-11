@@ -57,6 +57,7 @@ from mvrs_db.errors import (
     EngineFailedError,
     LockTimeoutError,
     MvrsDbError,
+    SerializationError,
     StorageIOError,
     TransactionError,
     TransactionTooLargeError,
@@ -68,7 +69,7 @@ from mvrs_db.recovery.recovery_manager import RecoveryStats, recover
 from mvrs_db.recovery.wal import RecordType, WalWriter
 from mvrs_db.sql import ast
 from mvrs_db.sql.parser import parse
-from mvrs_db.storage.buffer_pool import BufferPool
+from mvrs_db.storage.buffer_pool import BufferPool, SnapshotPool
 from mvrs_db.storage.disk_manager import DiskManager
 from mvrs_db.storage.page import page_lsn, set_page_lsn
 from mvrs_db.storage.record import decode_record
@@ -152,6 +153,7 @@ class Database:
         checkpoint_bytes: int,
         lock_timeout: float,
         log_deltas: bool,
+        snapshot_reads: bool,
     ) -> None:
         self._path = path
         self._file_lock = file_lock
@@ -164,6 +166,12 @@ class Database:
         self._catalog = Catalog(self._pool, AnnStore(path, disk.header.db_id))
         self._executor = Executor(self._catalog)
         self._locks = LockManager(lock_timeout)
+        # Snapshot isolation: readers see the database as of one commit and take
+        # no locks. Catalog views are built per commit number and shared by every
+        # reader at that number; _views_lock guards the dictionary.
+        self._snapshot_reads = snapshot_reads
+        self._views: dict[int, Catalog] = {}
+        self._views_lock = threading.Lock()
         self._synchronous = synchronous
         self._log_deltas = log_deltas
         # Pages that have a committed full image in the log since the last
@@ -192,6 +200,7 @@ class Database:
         checkpoint_bytes: int = config.DEFAULT_CHECKPOINT_BYTES,
         lock_timeout: float = config.DEFAULT_LOCK_TIMEOUT_SECONDS,
         log_deltas: bool = True,
+        isolation: str = "locking",
     ) -> Database:
         """Open a database, creating it if it does not exist and `create` is true.
 
@@ -201,7 +210,15 @@ class Database:
 
         log_deltas=False logs a whole page for every change, as the engine did
         before deltas existed. It exists to measure what deltas save.
+
+        isolation="locking" (the default) is strict two-phase locking: a reader
+        takes shared table locks and waits for any writer on those tables.
+        isolation="snapshot" is snapshot isolation: a SELECT reads the database as
+        of the last commit when it started, takes no locks, and never waits for
+        or blocks a writer. See docs/13-snapshot-isolation.md.
         """
+        if isolation not in ("locking", "snapshot"):
+            raise ValueError(f"isolation must be 'locking' or 'snapshot', not {isolation!r}")
         db_path = Path(path)
         if not create and not db_path.exists():
             raise DatabaseNotFoundError(f"no such database file: {db_path}")
@@ -236,6 +253,7 @@ class Database:
                 checkpoint_bytes=checkpoint_bytes,
                 lock_timeout=lock_timeout,
                 log_deltas=log_deltas,
+                snapshot_reads=isolation == "snapshot",
             )
             database._load_catalog()
             return database
@@ -400,15 +418,27 @@ class Database:
                 f"an earlier durability step failed ({failure}); close and reopen the database"
             )
         if isinstance(statement, ast.Select):
-            self._lock_for_reading(txn, statement)
+            if self._snapshot_reads and not txn.writing:
+                catalog = self._snapshot_catalog(txn)
+                result = self._executor.select(statement, catalog, self._snapshot_settings())
+                self._wait_for_visible_commits()
+                return result
+            if not self._snapshot_reads:
+                self._lock_for_reading(txn, statement)
             result = self._executor.select(statement)
             self._wait_for_visible_commits()
             return result
         if isinstance(statement, ast.Explain):
             inner = statement.statement
-            if isinstance(inner, ast.Select):
-                self._lock_for_reading(txn, inner)
-            else:
+            if isinstance(inner, ast.Select) and self._snapshot_reads and not txn.writing:
+                catalog = self._snapshot_catalog(txn)
+                return self._executor.explain(statement, catalog, self._snapshot_settings())
+            if not self._snapshot_reads:
+                if isinstance(inner, ast.Select):
+                    self._lock_for_reading(txn, inner)
+                else:
+                    self._locks.acquire(txn.txn_id, _table_lock(inner.table), SHARED)
+            elif not isinstance(inner, ast.Select) and not txn.writing:
                 self._locks.acquire(txn.txn_id, _table_lock(inner.table), SHARED)
             return self._executor.explain(statement)
 
@@ -416,6 +446,18 @@ class Database:
             # One writer at a time: page-level logging and rollback are only
             # correct if a page never holds two transactions' uncommitted changes.
             self._locks.acquire(txn.txn_id, _WRITER, EXCLUSIVE)
+            if txn.snapshot is not None:
+                # This transaction has been reading a snapshot. Nobody else can
+                # commit while it holds the writer slot, so if the database is
+                # still at that commit, its reads are exactly what it would read
+                # now and it may carry on as a writer. If not, whatever it
+                # decides to write rests on data that has since changed.
+                if txn.snapshot != self._pool.commit_seq:
+                    raise SerializationError(
+                        "could not serialize access: the database changed after this "
+                        "transaction's snapshot was taken; roll back and retry"
+                    )
+                self._end_snapshot(txn)
             self._pool.begin()
             txn.writing = True
         self._locks.acquire(txn.txn_id, _table_lock(statement.table), EXCLUSIVE)
@@ -435,6 +477,34 @@ class Database:
             txn.must_abort = self._pool.change_count != changes_before
             raise
 
+    # ------------------------------------------------------------------ snapshots
+
+    def _snapshot_catalog(self, txn: Transaction) -> Catalog:
+        """The catalog as of the transaction's snapshot, taking the snapshot if it has none."""
+        if txn.snapshot is None:
+            txn.snapshot = self._pool.begin_snapshot()
+        seq = txn.snapshot
+        with self._views_lock:
+            view = self._views.get(seq)
+            if view is None:
+                view = self._catalog.view(SnapshotPool(self._pool, seq))
+                # Views for commits no snapshot can use any more are dropped.
+                keep = set(self._pool.active_snapshots()) | {seq}
+                for old in [number for number in self._views if number not in keep]:
+                    del self._views[old]
+                self._views[seq] = view
+            return view
+
+    def _snapshot_settings(self) -> SearchSettings:
+        # The approximate index describes the newest rows, which this reader may
+        # not be allowed to see, so a snapshot always searches exactly.
+        return replace(self._executor.vector_settings, use_index=False)
+
+    def _end_snapshot(self, txn: Transaction) -> None:
+        if txn.snapshot is not None:
+            seq, txn.snapshot = txn.snapshot, None
+            self._pool.end_snapshot(seq)
+
     def _finish(self, txn: Transaction, *, commit: bool) -> None:
         """End a transaction.
 
@@ -447,6 +517,7 @@ class Database:
         """
         durable_at: int | None = None
         was_writer = txn.writing
+        self._end_snapshot(txn)
         try:
             if txn.writing:
                 txn.writing = False
@@ -715,7 +786,12 @@ class Connection:
             txn = self._txn or db._new_transaction(explicit=False)
             try:
                 result = db._run(txn, statement)
-            except (DeadlockError, LockTimeoutError, TransactionTooLargeError):
+            except (
+                DeadlockError,
+                LockTimeoutError,
+                SerializationError,
+                TransactionTooLargeError,
+            ):
                 # None of these can be fixed by retrying the statement inside
                 # the same transaction, so the transaction ends here.
                 self._abort(txn)

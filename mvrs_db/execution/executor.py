@@ -82,20 +82,37 @@ class Executor:
 
     # ------------------------------------------------------------------ queries
 
-    def _plan(self, statement: ast.Select) -> tuple[Operator, tuple[str, ...]]:
-        table = self._catalog.get(statement.table)
-        joined = [self._catalog.get(join.table) for join in statement.joins]
-        return plan_select(table, statement, self.vector_settings, joined)
+    def _plan(
+        self,
+        statement: ast.Select,
+        catalog: Catalog | None = None,
+        settings: SearchSettings | None = None,
+    ) -> tuple[Operator, tuple[str, ...]]:
+        """Plan a SELECT, against `catalog` if given (a snapshot's view) instead of the live one."""
+        source = catalog or self._catalog
+        table = source.get(statement.table)
+        joined = [source.get(join.table) for join in statement.joins]
+        return plan_select(table, statement, settings or self.vector_settings, joined)
 
-    def select(self, statement: ast.Select) -> Result:
-        plan, names = self._plan(statement)
+    def select(
+        self,
+        statement: ast.Select,
+        catalog: Catalog | None = None,
+        settings: SearchSettings | None = None,
+    ) -> Result:
+        plan, names = self._plan(statement, catalog, settings)
         rows = [row for _rid, row in plan.rows()]
         return Result(names, rows, len(rows))
 
-    def explain(self, statement: ast.Explain) -> Result:
+    def explain(
+        self,
+        statement: ast.Explain,
+        catalog: Catalog | None = None,
+        settings: SearchSettings | None = None,
+    ) -> Result:
         inner = statement.statement
         if isinstance(inner, ast.Select):
-            return self._explain_lines(explain(self._plan(inner)[0]))
+            return self._explain_lines(explain(self._plan(inner, catalog, settings)[0]))
         table = self._catalog.get(inner.table)
         access, _ordered = plan_access(table, unqualified_where(table, inner.where))
         if isinstance(inner, ast.Update):

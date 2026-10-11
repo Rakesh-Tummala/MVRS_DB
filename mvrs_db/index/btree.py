@@ -43,7 +43,7 @@ from collections.abc import Iterator
 from mvrs_db import config
 from mvrs_db.errors import CorruptIndexError, DuplicateKeyError, KeyTooLargeError
 from mvrs_db.index import btree_node as node
-from mvrs_db.storage.buffer_pool import BufferPool
+from mvrs_db.storage.buffer_pool import PagePool
 from mvrs_db.storage.heap_file import RecordId
 from mvrs_db.storage.page import PAGE_HEADER_SIZE, PageType, new_page, page_type_of
 
@@ -53,7 +53,7 @@ _INTERNAL = int(PageType.BTREE_INTERNAL)
 
 
 class BTree:
-    def __init__(self, pool: BufferPool, root_page: int, *, node_capacity: int | None = None):
+    def __init__(self, pool: PagePool, root_page: int, *, node_capacity: int | None = None):
         """`node_capacity` caps the bytes used per node. Tests use it to build deep
         trees from few keys; everything else leaves it at the page size."""
         self._pool = pool
@@ -63,7 +63,7 @@ class BTree:
             raise ValueError("node capacity must be above the node header and within a page")
 
     @staticmethod
-    def create(pool: BufferPool) -> int:
+    def create(pool: PagePool) -> int:
         """Allocate an empty tree (a single empty leaf) and return its root page ID."""
         page_id = pool.allocate(PageType.BTREE_LEAF)
         with pool.page(page_id, write=True) as buf:

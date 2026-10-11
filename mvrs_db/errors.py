@@ -171,6 +171,15 @@ class LockTimeoutError(TransactionError):
     """A lock could not be acquired within the timeout."""
 
 
+class SerializationError(TransactionError):
+    """A snapshot transaction tried to write after the database changed under it.
+
+    Its reads came from a snapshot that is no longer current, so writing on the
+    strength of them could undo someone else's committed change. Roll back and
+    run the transaction again.
+    """
+
+
 # ---------------------------------------------------------------- SQL
 
 

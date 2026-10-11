@@ -15,3 +15,6 @@ class Transaction:
     # Set when a statement failed after changing pages. Those changes cannot be
     # undone on their own, so the whole transaction has to be rolled back.
     must_abort: bool = False
+    # In snapshot isolation, the commit number this transaction reads as of, from
+    # its first read until it ends or starts writing.
+    snapshot: int | None = None

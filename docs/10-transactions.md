@@ -67,6 +67,6 @@ CPython runs one thread at a time, so threads do not make queries faster here. T
 
 Internal structures are protected by: the buffer pool latch, the disk manager's file lock, the lock manager's condition variable, and the catalog's lock.
 
-## Not built: MVCC
+## Snapshot isolation (optional)
 
-Multi-version concurrency control would let readers see a snapshot without blocking writers. It needs row versions with transaction IDs, visibility rules, and garbage collection of old versions, and it does not fit page-level before-images. It is future work.
+Everything above describes the default, `isolation="locking"`. With `isolation="snapshot"` readers take no locks and read the database as of one commit, so they never wait for a writer and a writer never waits for them. Writers are still one at a time. It is built from page-level versions, not row versions. See `13-snapshot-isolation.md`.

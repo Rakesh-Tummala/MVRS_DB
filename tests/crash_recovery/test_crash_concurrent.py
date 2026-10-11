@@ -43,9 +43,11 @@ def run_worker(
     crash_at: str | None,
     buffer_pages: int = 1024,
     checkpoint_bytes: int = HUGE_LOG,
+    isolation: str = "locking",
 ) -> int:
     env = dict(os.environ)
     env.pop(faults.ENV_VAR, None)
+    env["MVRS_ISOLATION"] = isolation
     if crash_at:
         env[faults.ENV_VAR] = crash_at
     command = [
@@ -148,6 +150,54 @@ def test_kill_while_threads_are_committing(
         db.execute("CREATE TABLE after_crash (id INTEGER PRIMARY KEY)")
         db.execute("INSERT INTO after_crash VALUES (1)")
         db.check()
+
+
+# The same kills with snapshot isolation and a reader thread running throughout.
+SNAPSHOT_CASES = [
+    ("commit.before_flush:20", 1024, HUGE_LOG),
+    ("wal.partial_flush:8", 1024, HUGE_LOG),
+    ("wal.after_sync:10", 1024, HUGE_LOG),
+    ("disk.torn_page_write:5", SMALL_POOL, SMALL_LOG),
+    ("checkpoint.after_flush:1", SMALL_POOL, SMALL_LOG),
+]
+
+
+@pytest.mark.parametrize(("crash_at", "buffer_pages", "checkpoint_bytes"), SNAPSHOT_CASES)
+def test_kill_during_snapshot_isolation(
+    tmp_path: Path, crash_at: str, buffer_pages: int, checkpoint_bytes: int
+) -> None:
+    path = tmp_path / "snap.mvrs"
+
+    code = run_worker(
+        path,
+        crash_at=crash_at,
+        buffer_pages=buffer_pages,
+        checkpoint_bytes=checkpoint_bytes,
+        isolation="snapshot",
+    )
+
+    assert code == faults.CRASH_EXIT_CODE, f"the worker never reached {crash_at}"
+    verify(path).close()
+
+
+def test_a_clean_snapshot_run_loses_nothing(tmp_path: Path) -> None:
+    path = tmp_path / "snap.mvrs"
+
+    assert (
+        run_worker(
+            path,
+            crash_at=None,
+            buffer_pages=SMALL_POOL,
+            checkpoint_bytes=SMALL_LOG,
+            isolation="snapshot",
+        )
+        == 0
+    )
+
+    assert acknowledged(path) == dict.fromkeys(range(THREADS), PER_THREAD)
+    db = verify(path)
+    assert db.check().tables == {"log": THREADS * PER_THREAD, "counters": THREADS}
+    db.close()
 
 
 def test_a_clean_run_loses_nothing(tmp_path: Path) -> None:

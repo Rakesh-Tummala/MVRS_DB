@@ -25,6 +25,29 @@ Transactions (no-steal)
 Page allocation
     Free pages form a linked list through the file header's free_list_head. A
     free page stores the next free page ID at offset 24.
+
+Snapshots (multi-version reads)
+    Every transaction that changes pages and commits gets the next commit
+    sequence number. A reader can register a snapshot, which is the sequence
+    number current at that moment, and then read every page as it was then,
+    without taking any lock and without being seen by the writer.
+
+    The reader needs the page's content as of its snapshot. There are three
+    places that content can be:
+      * the page changed after the snapshot and the change has committed: the
+        version store holds the page's before-image for that commit;
+      * the page is being changed by the transaction in progress: the
+        transaction's own before-image is the committed content;
+      * otherwise the page has not changed since the snapshot: the cached frame
+        (or the file) is current.
+    The reader copies what it finds while holding the latch, which is also taken
+    when a writer first touches a page, so it can never copy a page half way
+    through an edit: a page is only edited after its before-image is saved, and
+    the reader uses the saved image whenever one exists.
+
+    Before-images are kept only while some snapshot older than the commit is
+    registered, and are dropped when the last such snapshot ends. A long-lived
+    snapshot therefore costs memory in proportion to the pages changed since.
 """
 
 from __future__ import annotations
@@ -33,8 +56,9 @@ import struct
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
+from typing import Protocol
 
 from mvrs_db import config
 from mvrs_db.errors import (
@@ -63,6 +87,35 @@ class Frame:
     # data file: the end of the commit record of the transaction that last
     # changed it. 0 for a page whose changes are all already durable.
     durable_after: int = 0
+
+
+class PagePool(Protocol):
+    """What the heap file, B+ tree and catalog need from a pool of pages.
+
+    BufferPool is the real one. SnapshotPool is a read-only view of the
+    database as of an earlier commit; its write methods raise.
+    """
+
+    @property
+    def disk(self) -> DiskManager: ...
+
+    @property
+    def page_size(self) -> int: ...
+
+    @property
+    def in_transaction(self) -> bool: ...
+
+    def fetch(self, page_id: int, *, write: bool = False) -> bytearray: ...
+
+    def unpin(self, page_id: int) -> None: ...
+
+    def page(self, page_id: int, *, write: bool = False) -> AbstractContextManager[bytearray]: ...
+
+    def allocate(self, page_type: PageType) -> int: ...
+
+    def free(self, page_id: int) -> None: ...
+
+    def update_header(self, **changes: int) -> None: ...
 
 
 @dataclass(slots=True)
@@ -97,6 +150,13 @@ class BufferPool:
         # Active transaction: page ID -> (before-image or None for a new page, was dirty).
         self._txn: dict[int, tuple[bytes | None, bool]] | None = None
         self._txn_header: FileHeader | None = None
+        # Multi-version reads. _commit_seq counts committed changes; _active maps
+        # the sequence number of each registered snapshot to how many readers
+        # hold it; _versions[page] lists (commit number, the page as it was
+        # before that commit), oldest commit first.
+        self._commit_seq = 0
+        self._active: dict[int, int] = {}
+        self._versions: dict[int, list[tuple[int, bytes]]] = {}
         self.stats = PoolStats()
         # Counts every change to a page or the header. Comparing it before and
         # after a statement tells whether the statement modified anything.
@@ -340,6 +400,76 @@ class BufferPool:
     def header_changed(self) -> bool:
         return self._txn is not None and self._disk.header != self._txn_header
 
+    # ------------------------------------------------------------------ snapshots
+
+    @property
+    def commit_seq(self) -> int:
+        """How many transactions that changed anything have committed."""
+        return self._commit_seq
+
+    @property
+    def version_count(self) -> int:
+        """Page versions held for old snapshots (zero when none are registered)."""
+        with self._latch:
+            return sum(len(versions) for versions in self._versions.values())
+
+    def active_snapshots(self) -> list[int]:
+        """Sequence numbers that have at least one reader."""
+        with self._latch:
+            return sorted(self._active)
+
+    def begin_snapshot(self) -> int:
+        """Register a reader at the current commit and return its sequence number."""
+        with self._latch:
+            seq = self._commit_seq
+            self._active[seq] = self._active.get(seq, 0) + 1
+            return seq
+
+    def end_snapshot(self, seq: int) -> None:
+        """Release a snapshot; page versions nobody can need any more are dropped."""
+        with self._latch:
+            count = self._active.get(seq, 0)
+            if count == 0:
+                raise InternalError(f"snapshot {seq} is not registered")
+            if count == 1:
+                del self._active[seq]
+            else:
+                self._active[seq] = count - 1
+            self._prune_versions()
+
+    def _prune_versions(self) -> None:
+        if not self._active:
+            self._versions.clear()
+            return
+        oldest = min(self._active)
+        for page_id in list(self._versions):
+            kept = [entry for entry in self._versions[page_id] if entry[0] > oldest]
+            if kept:
+                self._versions[page_id] = kept
+            else:
+                del self._versions[page_id]
+
+    def snapshot_page(self, page_id: int, seq: int) -> bytearray:
+        """A private copy of the page as it was when commit number `seq` was the latest.
+
+        `seq` must belong to a registered snapshot, or the versions it needs may
+        already be gone.
+        """
+        with self._latch:
+            for commit, image in self._versions.get(page_id, ()):
+                if commit > seq:
+                    return bytearray(image)  # first change after the snapshot
+            entry = self._txn.get(page_id) if self._txn is not None else None
+            if entry is not None:
+                if entry[0] is None:
+                    raise CorruptPageError(f"page {page_id} did not exist at snapshot {seq}")
+                return bytearray(entry[0])  # being changed now: the committed content
+            buf = self.fetch(page_id)
+            try:
+                return bytearray(buf)
+            finally:
+                self.unpin(page_id)
+
     def commit(self, durable_after: int = 0) -> None:
         """End the transaction, keeping its changes. The pages stay dirty until flushed.
 
@@ -355,6 +485,14 @@ class BufferPool:
                 raise TransactionError("no transaction is active")
             for page_id in self._txn:
                 self._frames[page_id].durable_after = durable_after
+            if self._txn or self._disk.header != self._txn_header:
+                self._commit_seq += 1
+                if self._active:
+                    for page_id, (before, _was_dirty) in self._txn.items():
+                        if before is not None:
+                            self._versions.setdefault(page_id, []).append(
+                                (self._commit_seq, before)
+                            )
             self._txn = None
             self._txn_header = None
 
@@ -375,3 +513,50 @@ class BufferPool:
             self._disk.set_header(self._txn_header)
             self._txn = None
             self._txn_header = None
+
+
+class SnapshotPool:
+    """A read-only view of a BufferPool as of one commit.
+
+    Anything built on it (a HeapFile, a BTree, a Catalog) reads the database as
+    it was when the snapshot was taken, however much has changed since. Pages are
+    returned as private copies, so there is nothing to pin and no latch to hold
+    while a caller parses one. Every method that would change a page raises.
+    """
+
+    def __init__(self, pool: BufferPool, seq: int) -> None:
+        self._pool = pool
+        self.seq = seq
+
+    @property
+    def disk(self) -> DiskManager:
+        return self._pool.disk
+
+    @property
+    def page_size(self) -> int:
+        return self._pool.page_size
+
+    @property
+    def in_transaction(self) -> bool:
+        return False
+
+    def fetch(self, page_id: int, *, write: bool = False) -> bytearray:
+        if write:
+            raise InternalError("a snapshot is read-only")
+        return self._pool.snapshot_page(page_id, self.seq)
+
+    def unpin(self, page_id: int) -> None:
+        """Nothing is pinned: fetch() returns a copy."""
+
+    @contextmanager
+    def page(self, page_id: int, *, write: bool = False) -> Iterator[bytearray]:
+        yield self.fetch(page_id, write=write)
+
+    def allocate(self, page_type: PageType) -> int:
+        raise InternalError("a snapshot is read-only")
+
+    def free(self, page_id: int) -> None:
+        raise InternalError("a snapshot is read-only")
+
+    def update_header(self, **changes: int) -> None:
+        raise InternalError("a snapshot is read-only")

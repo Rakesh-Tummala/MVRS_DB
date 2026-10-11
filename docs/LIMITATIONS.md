@@ -9,7 +9,7 @@ What MVRS_DB does not do, stated plainly. Each item is a real difference from a 
 | SQL | `CROSS`/`NATURAL`/`USING` joins, `HAVING`, subqueries, `DISTINCT`, `OFFSET`, `LIKE`, `IN`, `BETWEEN`, arithmetic, column aliases, views, triggers, foreign keys, `ALTER TABLE`, `CREATE INDEX` | Each is rejected with an error that names it. Inner, `LEFT`, `RIGHT` and `FULL` joins of any number of tables, each on one equality, are supported; a chain with an outer join is not reordered. Aggregates and `GROUP BY` are supported on plain columns only: no `SUM(price * qty)`. |
 | Types | Booleans, dates, blobs, decimals | Three types only: `INTEGER`, `REAL`, `TEXT`. |
 | Indexes | Composite keys, non-unique secondary indexes | Only the primary key and `UNIQUE` columns are indexed. |
-| Concurrency | Concurrent writers, row-level locks, MVCC, savepoints | One writer at a time; locks are per table. |
+| Concurrency | Concurrent writers, row-level locks, row-level versions, savepoints | One writer at a time; locks are per table. `isolation="snapshot"` gives readers page-level snapshots that never block or wait (see `13-snapshot-isolation.md`), but conflicts are detected per database, the approximate vector index is not used for snapshot reads, and a reader that never ends keeps every page version since it began in memory. |
 | Logging | Undo logging, logical (per-operation) log records, a commit delay or timer for batching | Commits that overlap share an `fsync`, but a lone commit still pays for its own and the engine never waits to collect more. Page changes are logged as deltas where possible, but new pages, the first change to a page after a checkpoint, and changes over half a page are still logged whole. |
 | B+ tree | Merging or rebalancing after deletes, reverse scans | Emptied leaves are reused by later inserts but never freed. `ORDER BY ... DESC` always sorts. |
 | Storage | Records larger than a page, shrinking the file, compression, encryption | |
@@ -50,4 +50,3 @@ The optimiser assumes values are spread evenly between the smallest and largest 
 1. **Prepared statements with parameters.** Removes parsing from the hot path and removes the need to build SQL strings.
 3. **Non-unique secondary indexes**, by appending the record ID to the key.
 4. **ARIES-style logging** (steal, undo, compensation records), which is what unlocks concurrent writers and transactions larger than memory.
-5. **MVCC** on top of that, so readers never block.

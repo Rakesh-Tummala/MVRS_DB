@@ -27,7 +27,7 @@ from mvrs_db.errors import (
 from mvrs_db.index.btree import BTree
 from mvrs_db.sql import ast
 from mvrs_db.storage import heap_page
-from mvrs_db.storage.buffer_pool import BufferPool
+from mvrs_db.storage.buffer_pool import PagePool
 from mvrs_db.storage.heap_file import HeapFile, RecordId
 from mvrs_db.storage.record import ColumnType, Value, raw_vector
 from mvrs_db.vector.hnsw import HnswIndex
@@ -143,7 +143,7 @@ class Table:
 
 
 class Catalog:
-    def __init__(self, pool: BufferPool, store: AnnStore | None = None) -> None:
+    def __init__(self, pool: PagePool, store: AnnStore | None = None) -> None:
         self._pool = pool
         self._store = store
         self._lock = threading.RLock()
@@ -183,6 +183,28 @@ class Catalog:
             self._heap = heap
             self._tables = tables
             self._next_table_id = next_id
+
+    def view(self, pool: PagePool) -> Catalog:
+        """The catalog as `pool` sees it (a SnapshotPool gives the catalog at that commit).
+
+        Row and page counts are copied from this catalog when known. They only
+        steer the planner's estimates, so a count that includes an uncommitted
+        change is harmless, and copying avoids reading every page of a table
+        to count it for each new snapshot.
+        """
+        view = Catalog(pool)
+        view.load()
+        with self._lock:
+            live = dict(self._tables)
+        for name, table in view._tables.items():
+            current = live.get(name)
+            if current is None or current.schema.table_id != table.schema.table_id:
+                continue
+            table.row_count = current.row_count
+            pages = current.heap.cached_page_count()
+            if pages is not None:
+                table.heap.hint_page_count(pages)
+        return view
 
     def save_vector_indexes(self) -> int:
         with self._lock:

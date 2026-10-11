@@ -16,7 +16,7 @@ It stores tables in its own checksummed page file, indexes them with a B+ tree, 
 | SQL | `CREATE TABLE`, `DROP TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `WHERE` with `AND`/`OR`/`NOT` and three-valued NULL logic, `ORDER BY`, `LIMIT`, `PRIMARY KEY`, `UNIQUE`, `NOT NULL`, `EXPLAIN`, `COUNT`/`SUM`/`AVG`/`MIN`/`MAX` with `GROUP BY`, and joins (`INNER`, `LEFT`, `RIGHT`, `FULL`) of any number of tables, with aliases |
 | Planner | Cost-based choice between a full scan and an index scan, and between a hash join and an index join; join ordering for inner chains; predicate pushdown (safe around outer joins), sort elimination, top-N; constants fitted from measurements |
 | Durability | Write-ahead log of page changes (the bytes that changed, or whole pages), redo-only recovery, checkpoints, torn-page repair |
-| Transactions | `BEGIN` / `COMMIT` / `ROLLBACK`, two-phase locking per table, one writer and many readers, deadlock detection, group commit (concurrent commits share an `fsync`) |
+| Transactions | `BEGIN` / `COMMIT` / `ROLLBACK`, two-phase locking per table, one writer and many readers, deadlock detection, group commit (concurrent commits share an `fsync`); optionally snapshot isolation (`isolation="snapshot"`), where readers take no locks and never wait |
 | Vectors | A `VECTOR(n)` column type; exact nearest-neighbour search with `ORDER BY embedding <-> [0.1, 0.2] LIMIT 5` (Euclidean) or `<=>` (cosine); and an optional HNSW index (`VECTOR(n) HNSW`) for approximate search, kept in memory and saved to a validated cache file on close |
 
 ## Install
@@ -98,7 +98,7 @@ About 700 tests, taking roughly five minutes. Add `-m "not crash"` to skip the s
 | Property (Hypothesis) | The B+ tree and the whole engine against a Python dictionary, over random operation sequences |
 | Integration | SQL semantics, constraints, transactions, the planner's choices, the CLI |
 | Crash recovery | A child process is killed with `os._exit` at 19 injected points in two workloads, at 14 more while six threads commit at once, and during recovery itself; then durability, atomicity and every structural invariant are checked |
-| Concurrency | Dirty reads, lost updates, non-repeatable reads, phantoms and deadlocks, with real threads |
+| Concurrency | Dirty reads, lost updates, non-repeatable reads, phantoms and deadlocks, with real threads; snapshot reads against a model |
 
 `ruff` and `mypy --strict` pass on the engine.
 
@@ -122,6 +122,7 @@ Start with [docs/STUDY-GUIDE.md](docs/STUDY-GUIDE.md), which gives a reading ord
 | [09-btree.md](docs/09-btree.md) | Node layout, splits, range scans |
 | [05-wal-and-recovery.md](docs/05-wal-and-recovery.md) | The log, the commit protocol, recovery, what COMMIT guarantees |
 | [10-transactions.md](docs/10-transactions.md) | Locking, isolation, deadlock |
+| [13-snapshot-isolation.md](docs/13-snapshot-isolation.md) | Page-level versions, snapshots, the write rule |
 | [12-aggregates-and-joins.md](docs/12-aggregates-and-joins.md) | Aggregates, `GROUP BY`, and how joins are planned and executed |
 | [11-vector-search.md](docs/11-vector-search.md) | The vector type, distance measures, and how exact search runs |
 | [06-sql-grammar.md](docs/06-sql-grammar.md) | The supported SQL, as a grammar, with its type and NULL rules |

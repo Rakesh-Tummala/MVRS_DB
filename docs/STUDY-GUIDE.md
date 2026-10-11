@@ -42,7 +42,9 @@ Run the tests with:
 | 18 | Group commit | `05-wal-and-recovery.md` (sections "Commit, step by step", "Write ordering") | `recovery/wal.py` (`flush_through`, `atomic_append`); `_finish`, `_log_and_commit`, `_make_log_durable` in `database.py`; `commit(durable_after)` in `storage/buffer_pool.py` | `concurrency/test_group_commit.py`, `crash_recovery/test_crash_concurrent.py`, `benchmarks/group_commit.py` |
 | 17 | Delta log records | `05-wal-and-recovery.md` (section "Log whole pages, or the bytes that changed") | `recovery/delta.py`; `_log_and_commit` in `database.py`; `_rebuild` in `recovery/recovery_manager.py` | `unit/test_delta.py`, `crash_recovery/`, `benchmarks/log_volume.py` |
 
-Topics 14 to 19 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
+| 20 | Snapshot isolation | `13-snapshot-isolation.md` | `snapshot_page`, `begin_snapshot`, `SnapshotPool` in `storage/buffer_pool.py`; `Catalog.view`; `_snapshot_catalog`, `_run`, `_finish` in `database.py` | `unit/test_snapshots.py`, `concurrency/test_snapshot_isolation.py` |
+
+Topics 14 to 20 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
 
 ## Questions to be able to answer
 
@@ -132,6 +134,15 @@ Topics 14 to 19 were added after the first thirteen. Each of their design docs e
 * Why is a chain with an outer join not reordered, and how is an all-inner chain ordered?
 * How was the join code tested against a reference, and which deliberate bugs did that catch?
 
+### Snapshot isolation
+* Where is a page's content as of an old snapshot, in each of the three cases?
+* Why can a reader never copy a page the writer is half way through editing?
+* When are old versions kept, and when dropped?
+* Why does a transaction that read and then writes fail if anything committed in between? Why is that check safe once the writer slot is held?
+* Why does the staleness rule make every history serialisable here, when snapshot isolation in general is not?
+* What does a long-running reader cost?
+* Why does the log not need to know about snapshots?
+
 ### Transactions
 * What does strict two-phase locking guarantee? Why "strict"?
 * Show a deadlock with two transactions and one table. How is it detected?
@@ -146,6 +157,8 @@ Topics 14 to 19 were added after the first thirteen. Each of their design docs e
 * If you had another month, what would you build first, and why?
 
 ## Good experiments
+
+* In `snapshot_page`, check the writer's before-image *after* the committed versions instead of ignoring it; then ignore it, and run `test_snapshot_isolation.py`. Which test fails first, and what does it print?
 
 * In `rejects_null`, make `IS NULL` count as null-rejecting, then run `test_outer_joins.py` and read the failing query.
 

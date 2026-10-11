@@ -23,7 +23,7 @@ from mvrs_db.errors import (
     RecordTooLargeError,
 )
 from mvrs_db.storage import heap_page
-from mvrs_db.storage.buffer_pool import BufferPool
+from mvrs_db.storage.buffer_pool import PagePool
 from mvrs_db.storage.page import PageType, page_lsn, page_type_of
 
 _SIZE_CLASSES = 17  # free space is below 2**16, so class indexes run 0..16
@@ -35,15 +35,17 @@ class RecordId(NamedTuple):
 
 
 class HeapFile:
-    def __init__(self, pool: BufferPool, first_page: int) -> None:
+    def __init__(self, pool: PagePool, first_page: int) -> None:
         self._pool = pool
         self._first_page = first_page
         self._free: dict[int, int] | None = None
         self._classes: list[set[int]] = []
         self._last_page = first_page
+        # For a read-only view: a page count to use instead of walking the chain.
+        self._page_hint: int | None = None
 
     @staticmethod
-    def create(pool: BufferPool) -> int:
+    def create(pool: PagePool) -> int:
         """Allocate an empty heap and return its first page ID."""
         page_id = pool.allocate(PageType.HEAP)
         with pool.page(page_id, write=True) as buf:
@@ -55,7 +57,7 @@ class HeapFile:
         return self._first_page
 
     @property
-    def pool(self) -> BufferPool:
+    def pool(self) -> PagePool:
         return self._pool
 
     def invalidate(self) -> None:
@@ -224,7 +226,18 @@ class HeapFile:
 
     def page_count(self) -> int:
         """Pages in the chain, from the free-space map (walks the chain only once)."""
+        if self._free is None and self._page_hint is not None:
+            return self._page_hint
         return len(self._load())
+
+    def cached_page_count(self) -> int | None:
+        """The page count if it is already known, without reading anything."""
+        free = self._free
+        return None if free is None else len(free)
+
+    def hint_page_count(self, pages: int) -> None:
+        """Use an estimate of the page count (for planning only) instead of counting."""
+        self._page_hint = pages
 
     def count(self) -> tuple[int, int]:
         """(live records, pages) by walking the chain without decoding records."""
