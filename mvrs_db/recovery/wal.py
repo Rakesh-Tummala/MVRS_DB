@@ -70,6 +70,7 @@ class RecordType(IntEnum):
     PAGE_IMAGE = 1  # payload: page ID (u32) + the whole page after the change
     HEADER = 2  # payload: the 64-byte data file header after the change
     COMMIT = 3  # no payload; the transaction's earlier records now count
+    PAGE_DELTA = 4  # payload: the byte ranges of a page that changed (see delta.py)
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +169,8 @@ class WalWriter:
         self._file_size = WAL_HEADER_SIZE
         self._buffer = bytearray()
         self._unsynced = False
+        # Record bytes written since this writer was opened, across checkpoints.
+        self.bytes_written = 0
 
     @classmethod
     def create(
@@ -246,6 +249,7 @@ class WalWriter:
         except OSError as exc:
             raise StorageIOError(f"cannot write log {self._path}: {exc}") from exc
         self._file_size += len(data)
+        self.bytes_written += len(data)
         self._buffer.clear()
         faults.crash_point("wal.after_sync")
 

@@ -16,17 +16,29 @@ Changing one row can modify several pages: a heap page, a B+ tree leaf, and more
 | **Force-log-at-commit** | Commit returns only after the commit record is `fsync`'d. |
 | **Single writer** | One writing transaction at a time. |
 
-### Log page after-images at commit
+### Log whole pages, or the bytes that changed, at commit
 
-During a transaction nothing is logged. At commit, for each page the transaction dirtied, the engine appends the page's **after-image** to the log, then a commit record, then flushes and `fsync`s once. SQLite's WAL mode works the same way.
+During a transaction nothing is logged. At commit, for each page the transaction dirtied, the engine appends one record describing the page's new state, then a commit record, then flushes and `fsync`s once. There are two kinds of page record:
+
+| Record | Holds | Used for |
+|---|---|---|
+| `PAGE_IMAGE` | The whole page after the change | A new page; the **first** change to a page since the last checkpoint; any change of more than half a page |
+| `PAGE_DELTA` | The byte ranges of the page that changed, and the LSN the page had before the change | Every other change |
 
 * Structural changes need no special treatment. Allocating a page, changing the free list and writing a catalog record are all just modified pages. The file header is not a page in the buffer pool, so it gets its own record type.
-* Redo is "put this page back", which is naturally repeatable.
 * An uncommitted transaction leaves at most a partial batch with no commit record, which recovery ignores.
 
-The cost is log volume: a 4 KiB image for a one-byte change. Delta records (logging only the changed bytes) would fix that and are not implemented; see `LIMITATIONS.md`.
+A delta is computed by comparing the page against the copy the buffer pool saved when the transaction first touched it. The comparison runs in 32-byte blocks (a slice comparison, done in C), merges unequal neighbours into ranges, and trims each range to the exact bytes. The first 16 bytes of a page (checksum, page ID, LSN) are never part of a delta: the checksum is recomputed whenever the page is written, the page ID never changes, and the LSN comes from the record itself.
 
-Alternative considered: one logical record per operation (insert row, split node), as in ARIES and PostgreSQL. It gives a much smaller log and is required for concurrent writers, but every operation needs its own redo code and structural changes need careful handling. See D-010.
+**Why the first change after a checkpoint is a full image.** A delta can only be applied to the exact page it was computed from. If the disk tore that page while writing it, there would be nothing intact to apply deltas to. A full image of the page in the log, from before it could have been written, is what makes recovery possible. A checkpoint empties the log, so the next change to each page logs an image again.
+
+**Why a delta names the previous LSN.** It says which page state it follows. Recovery applies a delta only to a page at exactly that LSN, and stops with an error if the chain does not fit, instead of producing a page that never existed.
+
+**Why a change of more than half a page is logged whole.** Past that point the ranges and their headers cost more than they save.
+
+The first version of this engine logged only whole pages (as SQLite's WAL mode does), at 4 KiB or more per changed page. See D-010 for why that came first and D-056 for what deltas changed. `Database.open(log_deltas=False)` still selects it, for comparison.
+
+Alternative considered: one logical record per operation (insert row, split node), as in ARIES and PostgreSQL. It gives the smallest log and is required for concurrent writers, but every operation needs its own redo code and structural changes need careful handling. Deltas capture most of the saving without that.
 
 ### Rollback
 
@@ -50,8 +62,10 @@ Record (`<IIQQB` + payload):
 | `crc` | 4 | CRC32 of everything else in the record |
 | `lsn` | 8 | Must equal the record's computed position |
 | `txn_id` | 8 | |
-| `type` | 1 | 1 `PAGE_IMAGE`, 2 `HEADER`, 3 `COMMIT` |
-| payload | `length` | `PAGE_IMAGE`: page ID (4 bytes) + the page. `HEADER`: the 64-byte file header. `COMMIT`: empty. |
+| `type` | 1 | 1 `PAGE_IMAGE`, 2 `HEADER`, 3 `COMMIT`, 4 `PAGE_DELTA` |
+| payload | `length` | `PAGE_IMAGE`: page ID (4 bytes) + the page. `HEADER`: the 64-byte file header. `COMMIT`: empty. `PAGE_DELTA`: see below. |
+
+A `PAGE_DELTA` payload is `page_id` (u32), `prev_lsn` (u64, the LSN the page had before this change), `count` (u16), then `count` ranges, each `offset` (u16), `length` (u16) and `length` bytes. `delta.py` checks every range against the page and the payload before applying it.
 
 There is no BEGIN or ABORT record. A transaction's records are written together at commit, so the first record with a new `txn_id` is its beginning, and a transaction that aborts never writes anything.
 
@@ -64,12 +78,14 @@ There is no BEGIN or ABORT record. A transaction's records are written together 
 ## Commit, step by step
 
 1. If the header changed, append a `HEADER` record.
-2. For each changed page: set the page's `lsn` field to the LSN its record is about to get, then append a `PAGE_IMAGE` record.
+2. For each changed page, decide image or delta as described above. Set the page's `lsn` field to the LSN its record is about to get, then append the `PAGE_IMAGE` or `PAGE_DELTA` record. A page fetched for writing but left unchanged is skipped.
 3. Append a `COMMIT` record.
 4. `flush()` and `fsync` the log.
-5. Tell the buffer pool the transaction is over. Its pages are now ordinary dirty pages.
+5. Note which pages now have a full image in the log (only now, with the records durable), then tell the buffer pool the transaction is over. Its pages are now ordinary dirty pages.
 
 The transaction is committed when step 4 returns. If the process dies before then, the transaction never happened.
+
+A checkpoint forgets which pages have an image, since it empties the log.
 
 ## Write ordering (the WAL rule)
 
@@ -82,7 +98,7 @@ A page may be written to the data file only when the log is durable up to that p
 
 When `commit` returns successfully with the default `synchronous=True`:
 
-* Every page image of the transaction and its commit record are in the log file, and `os.fsync` on the log returned without error.
+* Every page record of the transaction and its commit record are in the log file, and `os.fsync` on the log returned without error.
 * After a process crash, recovery restores all of the transaction's effects.
 * After an OS crash or power loss, the same holds **if** the OS and the drive honour `fsync`.
 
@@ -101,8 +117,8 @@ If writing or syncing the log fails, the commit fails, the in-memory changes are
 A torn page is a page write interrupted halfway: part new, part old.
 
 * **Detection:** the page checksum fails on read.
-* **Repair:** recovery treats a page with a bad checksum as older than any image and overwrites it whole. Every page written since the last checkpoint has an image in the log, because a checkpoint leaves all pages clean and every later change is logged at commit.
-* **No image available:** a page that fails its checksum and has no image in the log was not damaged by a torn write we can repair. Nothing touches it during recovery; reading it later raises `ChecksumMismatchError`, and `Database.check()` reports it.
+* **Repair:** recovery cannot use a page with a bad checksum as a starting point, so it starts from the newest full image of the page in the log and applies every delta logged after it. A full image always exists: the first change to a page after a checkpoint is logged whole, and a page only reaches the disk after it has changed.
+* **No image available:** a page that fails its checksum and has no image in the log cannot be rebuilt, and recovery stops with an error naming the page. This cannot arise from a torn write; it means damage after the page was last checkpointed, or a log that was lost.
 
 Assumption: a write that fits in one 512-byte disk sector is atomic. The log header and the data file header rely on this.
 
@@ -124,14 +140,18 @@ Checkpoints run when the log passes 8 MiB (configurable), on clean close, and at
 On open, before anything else reads the data file:
 
 1. **Scan** the log to its valid end and collect the transaction IDs that have a `COMMIT` record.
-2. **Redo.** Apply the newest committed `HEADER`, if any. For each page, take the newest image belonging to a committed transaction; write it unless the page on disk has a valid checksum and an `lsn` at least as new.
+2. **Redo.** Apply the newest committed `HEADER`, if any. Then, for each page that has committed records:
+   * If the page on disk has a valid checksum and an `lsn` at least as new as the page's last record, leave it.
+   * Otherwise pick a starting point: the newest full image newer than the page on disk, or, if there is none, the page on disk. Apply the deltas after it in order, checking that each one's `prev_lsn` equals the page's LSN at that moment. Write the result once.
 3. **Finish.** Write the header, `fsync` the data file, check that the file length matches the header, then empty the log.
 
-**Idempotent:** recovery only moves pages forward to a state the log fully describes, and leaves the log untouched until the data file is synced. Crashing during recovery and running it again reaches the same state.
+**Idempotent:** each page is written once, in its final state, and the log is untouched until the data file is synced. Crashing during recovery and running it again finds the pages that were written already current and skips them.
 
 ## What is tested
 
-58 tests in `tests/crash_recovery/` start a child process, kill it with `os._exit` at an injected point (`mvrs_db/faults.py`), reopen, and check durability, atomicity and `Database.check()`. Two workloads are used: row changes across two indexes, and creating and dropping tables.
+58 tests in `tests/crash_recovery/` start a child process, kill it with `os._exit` at an injected point (`mvrs_db/faults.py`), reopen, and check durability, atomicity and `Database.check()`. Two workloads are used: row changes across two indexes, and creating and dropping tables. Delta logging is on in all of them, and one test asserts that recovery after a kill really did rebuild pages by replaying deltas.
+
+`tests/unit/test_delta.py` covers the delta machinery on its own: finding changed ranges (including a property test over random edits), rejecting malformed records, resuming a page that reached disk partway through its history, rebuilding a torn page from its image plus later deltas, a later image superseding earlier records, refusing a delta that does not follow the page, and idempotence.
 
 | Crash point | Outcome required for the transaction in flight |
 |---|---|
@@ -142,7 +162,7 @@ On open, before anything else reads the data file:
 | Commit record fsynced, commit not yet returned | present |
 | Start of, middle of, and end of a checkpoint | present |
 | Between rewriting the log header and truncating it | present |
-| Halfway through a page write, at four different moments | either, never half |
+| Halfway through a page write, at four different moments (the 1st, 9th, 40th and 50th page write) | either, never half |
 | During database creation | a usable empty database |
 | During recovery (five points), twice in a row | same result as uninterrupted recovery |
 | Log truncated at 25 offsets; a byte flipped in each of the last 12 records | a whole number of transactions survives |

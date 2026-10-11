@@ -316,6 +316,20 @@ class BufferPool:
                 raise TransactionError("no transaction is active")
             return [(page_id, self._frames[page_id].data) for page_id in sorted(self._txn)]
 
+    def transaction_changes(self) -> list[tuple[int, bytes | None, bytearray]]:
+        """(page ID, the page as it was before the transaction, the page now), in page order.
+
+        The "before" is None for a page that did not exist. The commit code uses
+        the pair to log only the bytes that changed.
+        """
+        with self._latch:
+            if self._txn is None:
+                raise TransactionError("no transaction is active")
+            return [
+                (page_id, self._txn[page_id][0], self._frames[page_id].data)
+                for page_id in sorted(self._txn)
+            ]
+
     def header_changed(self) -> bool:
         return self._txn is not None and self._disk.header != self._txn_header
 

@@ -283,6 +283,29 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 * **Reason:** A fixed order rules out two joins deadlocking against each other over the same pair of tables. The deadlock detector would catch it anyway; this avoids the rollback.
 * **Date:** 2026-10-11
 
+## D-056 — Log the bytes that changed, not the whole page (refines D-010)
+* **Decision:** A changed page is logged as a `PAGE_DELTA`: the byte ranges that differ from the page's state when the transaction first touched it, plus the LSN of that state. A full `PAGE_IMAGE` is still used for a new page, for the first change to a page after a checkpoint, and for a change of more than half a page.
+* **Alternatives:** Keep whole-page images; per-operation (logical) log records as in ARIES.
+* **Reason:** Measured on 3,000 single-row inserts, the log went from 25.2 MB to 1.05 MB (8,401 to 350 bytes per commit), and recovery of single-row inserts and updates took 1.7 to 2.1 times less time in each of two runs. Logical records would shrink it further but need redo code for every operation; deltas reuse the existing page-level redo and before-images.
+* **What it did not do:** Speed up commits. With fsync off, the throughput ratio (deltas over images) ran from 0.86 to 1.06 across workloads and varied by about 15% for the same workload between two runs, so there is no measurable change. With fsync on a commit took 23.0 ms with images and 22.8 ms with deltas, because a hard disk's sync latency dominates. Bulk inserts shrank only 1.1 times, since they write new pages, and deletes 3.2 times (D-058).
+* **Date:** 2026-10-11
+
+## D-057 — The first change to a page after a checkpoint is always a full image
+* **Alternatives:** Log deltas from the start and rely on the page on disk as the base.
+* **Reason:** If the disk tears a page while writing it, a delta has nothing intact to apply to. A full image earlier in the log is what lets recovery rebuild such a page, so it cannot be skipped. The engine records which pages have an image since the last checkpoint, and adds a page to that set only after its commit is durable.
+* **Date:** 2026-10-11
+
+## D-058 — Index deletes are poorly served by deltas, and that is accepted for now
+* **Decision:** None needed in code; recorded because it was found by measurement. Removing one key rewrites a whole B+ tree node (D-027), which shifts many cells, so 52 of 200 single-row deletes produced a change over half a page and were logged whole.
+* **Alternatives:** Edit B+ tree cells in place so that a delete moves few bytes.
+* **Reason:** Editing nodes in place is a larger change to the most delicate code in the engine and would also cut insert CPU. It is first on the future-work list in `LIMITATIONS.md`.
+* **Date:** 2026-10-11
+
+## D-059 — A delta names the LSN it follows, and recovery refuses a chain that does not fit
+* **Alternatives:** Apply deltas in log order without checking.
+* **Reason:** A delta is only meaningful against the exact page state it was computed from. A mismatch means the log and the page have come apart; stopping with an error is safer than building a page that never existed.
+* **Date:** 2026-10-11
+
 ## D-019 — Optional dependencies only
 * **Alternatives:** Make `typer` a hard dependency.
 * **Reason:** The engine installs with no third-party packages. `typer`, test tools, `matplotlib` and `numpy` are extras.

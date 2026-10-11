@@ -61,7 +61,7 @@ One milestone at a time. Each ends with `pytest`, `ruff` and `mypy` clean, `docs
 | 4.3 | Recovery redo pass (**you**) | W2–W4 on hand-built logs; recovery twice equals recovery once. |
 | 4.4 | Checkpoint and torn-page repair | Log is emptied; torn page restored from its image; corrupt page with no image raises. |
 | 4.5 | Crash-test matrix | Every crash point in `docs/ROADMAP.md`, using real process death; after each: committed present, uncommitted absent, all invariants including A2. |
-| 4.6 (optional) | Delta records | Same crash matrix passes; log volume compared with image-only. |
+| 4.6 (optional) | Delta records | Same crash matrix passes; log volume compared with image-only. **Done:** the matrix passes with deltas on; the log is 24 times smaller for single-row inserts and 14 times for updates, but only 1.1 to 3.2 times for bulk inserts and deletes, and commit speed shows no change beyond run-to-run noise. See `benchmarks/log_volume.py`. |
 
 ## Phases 5–8 (outline; detailed when reached)
 

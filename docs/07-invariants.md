@@ -78,6 +78,8 @@ A2 is the "no leaks, no double allocation" check that runs after every crash tes
 | W3 | After recovery, the database contains the effects of exactly the committed transactions |
 | W4 | Running recovery twice gives the same state as running it once |
 | W5 | For every page, on-disk `lsn` ≤ the LSN up to which the log is durable |
+| W6 | A `PAGE_DELTA` is applied only to a page whose LSN equals the delta's `prev_lsn` |
+| W7 | Every page written to the data file since the last checkpoint has a full `PAGE_IMAGE` in the log, committed before the first delta for that page |
 
 ## Failure scenarios
 

@@ -1,0 +1,198 @@
+{
+  "environment": {
+    "os": "Windows 11 (build 10.0.26200)",
+    "python": "CPython 3.13.7",
+    "machine": "AMD64",
+    "logical_cpus": "8",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz",
+    "ram": "15.8 GB",
+    "drive": "W: HDD / RAID / TOSHIBA MQ04ABF100",
+    "defender_realtime": "on"
+  },
+  "results": [
+    {
+      "workload": "3,000 single-row inserts",
+      "deltas": false,
+      "page_size": 4096,
+      "commits": 3000,
+      "log_bytes": 25203064,
+      "bytes_per_commit": 8401.021333333334,
+      "seconds": 0.9537247999978717,
+      "commits_per_second": 3145.5614869265164,
+      "recovery_ms": 265.7496999963769,
+      "recovery_deltas_applied": 0
+    },
+    {
+      "workload": "3,000 single-row inserts",
+      "deltas": true,
+      "page_size": 4096,
+      "commits": 3000,
+      "log_bytes": 1050891,
+      "bytes_per_commit": 350.297,
+      "seconds": 1.4715087000004132,
+      "commits_per_second": 2038.723930072012,
+      "recovery_ms": 154.80789999855915,
+      "recovery_deltas_applied": 5773
+    },
+    {
+      "workload": "60 inserts of 500 rows",
+      "deltas": false,
+      "page_size": 4096,
+      "commits": 60,
+      "log_bytes": 3859818,
+      "bytes_per_commit": 64330.3,
+      "seconds": 6.86111680000613,
+      "commits_per_second": 8.744932020388633,
+      "recovery_ms": 198.03989999491023,
+      "recovery_deltas_applied": 0
+    },
+    {
+      "workload": "60 inserts of 500 rows",
+      "deltas": true,
+      "page_size": 4096,
+      "commits": 60,
+      "log_bytes": 3432808,
+      "bytes_per_commit": 57213.46666666667,
+      "seconds": 6.769452599997749,
+      "commits_per_second": 8.86334590776512,
+      "recovery_ms": 211.06549999967683,
+      "recovery_deltas_applied": 120
+    },
+    {
+      "workload": "1,500 single-row updates",
+      "deltas": false,
+      "page_size": 4096,
+      "commits": 1464,
+      "log_bytes": 6472512,
+      "bytes_per_commit": 4421.11475409836,
+      "seconds": 0.945470300001034,
+      "commits_per_second": 1548.4357361605107,
+      "recovery_ms": 278.02250000240747,
+      "recovery_deltas_applied": 0
+    },
+    {
+      "workload": "1,500 single-row updates",
+      "deltas": true,
+      "page_size": 4096,
+      "commits": 1464,
+      "log_bytes": 461617,
+      "bytes_per_commit": 315.31215846994536,
+      "seconds": 0.9135507999963011,
+      "commits_per_second": 1602.538140195299,
+      "recovery_ms": 165.27330000099028,
+      "recovery_deltas_applied": 1474
+    },
+    {
+      "workload": "1,500 single-row deletes",
+      "deltas": false,
+      "page_size": 4096,
+      "commits": 1500,
+      "log_bytes": 12809412,
+      "bytes_per_commit": 8539.608,
+      "seconds": 1.2927006000027177,
+      "commits_per_second": 1160.3614943760733,
+      "recovery_ms": 276.6745999979321,
+      "recovery_deltas_applied": 0
+    },
+    {
+      "workload": "1,500 single-row deletes",
+      "deltas": true,
+      "page_size": 4096,
+      "commits": 1500,
+      "log_bytes": 4014671,
+      "bytes_per_commit": 2676.4473333333335,
+      "seconds": 1.2248322000014014,
+      "commits_per_second": 1224.6575490081693,
+      "recovery_ms": 165.2438999954029,
+      "recovery_deltas_applied": 2380
+    },
+    {
+      "workload": "3,000 single-row inserts",
+      "deltas": false,
+      "page_size": 4096,
+      "commits": 3000,
+      "log_bytes": 25203064,
+      "bytes_per_commit": 8401.021333333334,
+      "seconds": 0.9600785000002361,
+      "commits_per_second": 3124.7444870385725,
+      "recovery_ms": 243.719099998998,
+      "recovery_deltas_applied": 0
+    },
+    {
+      "workload": "3,000 single-row inserts",
+      "deltas": true,
+      "page_size": 4096,
+      "commits": 3000,
+      "log_bytes": 1050891,
+      "bytes_per_commit": 350.297,
+      "seconds": 1.1196453000011388,
+      "commits_per_second": 2679.419991310595,
+      "recovery_ms": 133.6347999967984,
+      "recovery_deltas_applied": 5773
+    },
+    {
+      "workload": "3,000 single-row inserts",
+      "deltas": false,
+      "page_size": 16384,
+      "commits": 3000,
+      "log_bytes": 98965155,
+      "bytes_per_commit": 32988.385,
+      "seconds": 3.6740397999965353,
+      "commits_per_second": 816.5398752628726,
+      "recovery_ms": 430.83959999785293,
+      "recovery_deltas_applied": 0
+    },
+    {
+      "workload": "3,000 single-row inserts",
+      "deltas": true,
+      "page_size": 16384,
+      "commits": 3000,
+      "log_bytes": 1081666,
+      "bytes_per_commit": 360.55533333333335,
+      "seconds": 2.5717611000000034,
+      "commits_per_second": 1166.5158167296318,
+      "recovery_ms": 143.2827000026009,
+      "recovery_deltas_applied": 5041
+    },
+    {
+      "workload": "3,000 single-row inserts",
+      "deltas": false,
+      "page_size": 32768,
+      "commits": 3000,
+      "log_bytes": 197284301,
+      "bytes_per_commit": 65761.43366666666,
+      "seconds": 4.717169000003196,
+      "commits_per_second": 635.9746704003965,
+      "recovery_ms": 600.6908000053954,
+      "recovery_deltas_applied": 0
+    },
+    {
+      "workload": "3,000 single-row inserts",
+      "deltas": true,
+      "page_size": 32768,
+      "commits": 3000,
+      "log_bytes": 1127811,
+      "bytes_per_commit": 375.937,
+      "seconds": 4.457173800001328,
+      "commits_per_second": 673.0722504020611,
+      "recovery_ms": 165.23910000250908,
+      "recovery_deltas_applied": 4075
+    }
+  ],
+  "durable": [
+    {
+      "deltas": false,
+      "commits": 150,
+      "median_ms": 23.03070000198204,
+      "commits_per_second": 32.76279689157379,
+      "bytes_per_commit": 8359.28
+    },
+    {
+      "deltas": true,
+      "commits": 150,
+      "median_ms": 22.818899997218978,
+      "commits_per_second": 37.50132098413097,
+      "bytes_per_commit": 324.8333333333333
+    }
+  ]
+}

@@ -62,13 +62,14 @@ from mvrs_db.errors import (
 )
 from mvrs_db.execution.executor import Executor, Result
 from mvrs_db.index.keys import encode_key
+from mvrs_db.recovery.delta import changed_ranges, delta_size, encode_delta
 from mvrs_db.recovery.recovery_manager import RecoveryStats, recover
 from mvrs_db.recovery.wal import RecordType, WalWriter
 from mvrs_db.sql import ast
 from mvrs_db.sql.parser import parse
 from mvrs_db.storage.buffer_pool import BufferPool
 from mvrs_db.storage.disk_manager import DiskManager
-from mvrs_db.storage.page import set_page_lsn
+from mvrs_db.storage.page import page_lsn, set_page_lsn
 from mvrs_db.storage.record import decode_record
 from mvrs_db.transactions.lock_manager import EXCLUSIVE, SHARED, LockManager
 from mvrs_db.transactions.transaction import Transaction
@@ -149,6 +150,7 @@ class Database:
         synchronous: bool,
         checkpoint_bytes: int,
         lock_timeout: float,
+        log_deltas: bool,
     ) -> None:
         self._path = path
         self._file_lock = file_lock
@@ -162,6 +164,10 @@ class Database:
         self._executor = Executor(self._catalog)
         self._locks = LockManager(lock_timeout)
         self._synchronous = synchronous
+        self._log_deltas = log_deltas
+        # Pages that have a committed full image in the log since the last
+        # checkpoint. Only these may be logged as deltas.
+        self._imaged: set[int] = set()
         self._checkpoint_bytes = checkpoint_bytes
         self._txn_ids = itertools.count(1)
         self._failed: str | None = None
@@ -184,12 +190,16 @@ class Database:
         synchronous: bool = True,
         checkpoint_bytes: int = config.DEFAULT_CHECKPOINT_BYTES,
         lock_timeout: float = config.DEFAULT_LOCK_TIMEOUT_SECONDS,
+        log_deltas: bool = True,
     ) -> Database:
         """Open a database, creating it if it does not exist and `create` is true.
 
         synchronous=False skips the fsync at commit. Commits are then much
         faster and still survive a crash of this process, but can be lost if the
         operating system crashes or the power fails.
+
+        log_deltas=False logs a whole page for every change, as the engine did
+        before deltas existed. It exists to measure what deltas save.
         """
         db_path = Path(path)
         if not create and not db_path.exists():
@@ -224,6 +234,7 @@ class Database:
                 synchronous=synchronous,
                 checkpoint_bytes=checkpoint_bytes,
                 lock_timeout=lock_timeout,
+                log_deltas=log_deltas,
             )
             database._load_catalog()
             return database
@@ -300,6 +311,11 @@ class Database:
     @property
     def wal_size(self) -> int:
         return self._wal.size
+
+    @property
+    def log_bytes_written(self) -> int:
+        """Log record bytes written since the database was opened, across checkpoints."""
+        return self._wal.bytes_written
 
     @property
     def vector(self) -> SearchSettings:
@@ -425,17 +441,43 @@ class Database:
     def _log_and_commit(self, txn_id: int) -> None:
         """Make the active transaction durable (the commit protocol)."""
         pool, wal = self._pool, self._wal
-        pages = pool.transaction_pages()
-        if not pages and not pool.header_changed():
+        # Decide, per changed page, between a delta and a full image.
+        # (page ID, page buffer, ranges that changed or None for a full image)
+        to_log: list[tuple[int, bytearray, bytes | None, list[tuple[int, int]] | None]] = []
+        half_page = self._disk.page_size // 2
+        for page_id, before, data in pool.transaction_changes():
+            if before is None:
+                to_log.append((page_id, data, None, None))  # a new page
+                continue
+            ranges = changed_ranges(before, data)
+            if not ranges:
+                continue  # fetched for writing but left as it was
+            needs_image = (
+                not self._log_deltas
+                # The first change since the last checkpoint must be a full
+                # image: it is what repairs the page if a later write is torn.
+                or page_id not in self._imaged
+                or delta_size(ranges) > half_page
+            )
+            to_log.append((page_id, data, before, None if needs_image else ranges))
+
+        if not to_log and not pool.header_changed():
             pool.commit()  # the transaction changed nothing
             return
         faults.crash_point("commit.before_log")
         try:
             if pool.header_changed():
                 wal.append(RecordType.HEADER, txn_id, self._disk.header.pack())
-            for page_id, data in pages:
+            for page_id, data, before, delta_ranges in to_log:
                 set_page_lsn(data, wal.next_lsn)
-                wal.append(RecordType.PAGE_IMAGE, txn_id, _PAGE_ID.pack(page_id) + bytes(data))
+                if delta_ranges is None or before is None:
+                    wal.append(RecordType.PAGE_IMAGE, txn_id, _PAGE_ID.pack(page_id) + bytes(data))
+                else:
+                    wal.append(
+                        RecordType.PAGE_DELTA,
+                        txn_id,
+                        encode_delta(page_id, page_lsn(before), data, delta_ranges),
+                    )
             wal.append(RecordType.COMMIT, txn_id)
             faults.crash_point("commit.before_flush")
             wal.flush(sync=self._synchronous)
@@ -445,6 +487,8 @@ class Database:
             wal.discard_buffer()
             self._failed = str(exc)
             raise
+        # Only now, with the records durable, do these pages count as imaged.
+        self._imaged.update(page_id for page_id, _d, _b, planned in to_log if planned is None)
         pool.commit()
         self.commits += 1
         faults.crash_point("commit.after_durable")
@@ -465,6 +509,8 @@ class Database:
         except StorageIOError as exc:
             self._failed = str(exc)
             raise
+        # The log is empty again, so no page has an image in it any more.
+        self._imaged.clear()
         self.checkpoints += 1
 
     # ------------------------------------------------------------------ integrity

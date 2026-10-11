@@ -266,7 +266,9 @@ def test_failed_log_write_fails_the_commit_and_stops_further_writes(
 
 
 def test_checkpoint_empties_the_log(tmp_path: Path) -> None:
-    with mvrs_db.connect(tmp_path / "db.mvrs", checkpoint_bytes=1 << 30) as db:
+    # Whole-page logging, so the log grows by at least two pages per commit.
+    # (The delta case is covered by test_deltas_shrink_the_log below.)
+    with mvrs_db.connect(tmp_path / "db.mvrs", checkpoint_bytes=1 << 30, log_deltas=False) as db:
         db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)")
         for i in range(20):
             db.execute(f"INSERT INTO t VALUES ({i}, '{'x' * 300}')")
@@ -280,8 +282,29 @@ def test_checkpoint_empties_the_log(tmp_path: Path) -> None:
         assert db.check().tables == {"t": 20}
 
 
+def test_deltas_shrink_the_log(tmp_path: Path) -> None:
+    sizes = {}
+    for deltas in (False, True):
+        path = tmp_path / f"deltas-{deltas}.mvrs"
+        with mvrs_db.connect(
+            path, checkpoint_bytes=1 << 30, synchronous=False, log_deltas=deltas
+        ) as db:
+            db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)")
+            for i in range(300):
+                db.execute(f"INSERT INTO t VALUES ({i}, '{'x' * 40}')")
+            sizes[deltas] = db.log_bytes_written
+            assert db.check().tables == {"t": 300}
+
+    # Small rows change a few dozen bytes of a page; logging the whole page
+    # for each one is what the delta avoids.
+    assert sizes[True] * 5 < sizes[False]
+
+
 def test_automatic_checkpoint_keeps_the_log_bounded(tmp_path: Path) -> None:
-    with mvrs_db.connect(tmp_path / "db.mvrs", checkpoint_bytes=64 * 1024, synchronous=False) as db:
+    # Whole-page logging again: the threshold is reached after a handful of commits.
+    with mvrs_db.connect(
+        tmp_path / "db.mvrs", checkpoint_bytes=64 * 1024, synchronous=False, log_deltas=False
+    ) as db:
         db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)")
         for i in range(300):
             db.execute(f"INSERT INTO t VALUES ({i}, '{'x' * 300}')")

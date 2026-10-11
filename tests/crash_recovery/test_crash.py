@@ -135,7 +135,10 @@ CRASH_POINTS = [
     ("disk.torn_page_write:1", None),
     ("disk.torn_page_write:9", None),
     ("disk.torn_page_write:40", None),
-    ("disk.torn_page_write:80", None),
+    # The "rows" workload makes 50 to 59 page writes in all, so 50 is the latest
+    # one both workloads reach. (With whole-page logging it made more; deltas
+    # shrink the log, so checkpoints, and the page writes they cause, come less often.)
+    ("disk.torn_page_write:50", None),
 ]
 
 
@@ -184,6 +187,9 @@ def test_killed_while_idle_with_nothing_checkpointed(tmp_path: Path, scenario: s
     assert acknowledged(path) == (True, TRANSACTIONS)
     assert db.recovery.committed_transactions > TRANSACTIONS
     assert db.recovery.pages_restored > 10
+    # Not only whole-page images: pages were rebuilt by replaying deltas after
+    # their first image, which is the path delta logging added to recovery.
+    assert db.recovery.deltas_applied > 10
     db.close()
 
 
@@ -246,7 +252,12 @@ def test_truncated_log_tail(tmp_path: Path, scenario: str) -> None:
         with mvrs_db.connect(path, create=False) as db:
             db.check()
             visible = scenarios.visible_transactions(db)
-            if visible is not None:
+            # visible 0 or None means the cut fell inside the workload's setup,
+            # which is several separate commits (create a table, insert a row,
+            # create the next table). Any prefix of those is a valid state and
+            # check() above has already verified it. From visible 1 on, setup
+            # is complete and the whole scenario must match its model.
+            if visible:
                 scenarios.SCENARIOS[scenario][2](db, visible)
             seen.add(visible)
 

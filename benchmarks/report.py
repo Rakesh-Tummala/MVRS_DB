@@ -341,10 +341,13 @@ def render(results: dict[str, Any], images: list[str]) -> str:
         )
     )
     add(
-        "\nLarger pages mean fewer pages to manage and fewer splits, but every commit logs "
-        "more bytes, because the log stores whole page images. That is why load throughput "
-        "falls as the page grows. At this table size the index has the same height at every "
-        "page size, so the lookup difference is not from a shallower tree.\n"
+        "\nLoad throughput falls as the page grows. The log is not the reason: with delta "
+        "records the bytes logged per commit barely change with page size (section 12). "
+        "Profiling shows the cost is CPU per commit that grows with the page: a changed page "
+        "is compared byte-range by byte-range against its earlier copy, and a B+ tree node "
+        "is decoded and re-encoded whole, so a larger node means more entries to process for "
+        "each inserted row. At this table size the index has the same height at every page "
+        "size, so the lookup difference is not from a shallower tree.\n"
     )
     add(f"Reproduce: `{RUN} page_size`\n")
 
@@ -394,9 +397,9 @@ def render(results: dict[str, Any], images: list[str]) -> str:
         )
     )
     add(
-        "\nRecovery reads the whole log but writes each page once, however many images of "
-        "it the log holds. Recovery time therefore follows log size, and the default "
-        "8 MB checkpoint threshold bounds it.\n"
+        "\nRecovery reads the whole log but writes each page once, however many records "
+        "(images and deltas) the log holds for it. Recovery time therefore follows log size, "
+        "and the default 8 MB checkpoint threshold bounds it.\n"
     )
     add(f"Reproduce: `{RUN} recovery`\n")
 
@@ -511,13 +514,20 @@ def render(results: dict[str, Any], images: list[str]) -> str:
     )
     add(f"\nReproduce: `{RUN} sqlite`\n")
 
+    volume = _load_log_volume()
+    if volume is not None:
+        add(_log_volume_section(volume))
+
     add("## Known bottlenecks\n")
     add(
-        "- **Whole-page log images.** A one-row change logs at least two 4 KB pages (heap "
-        "and index leaf). Delta records would shrink the log several-fold.\n"
+        "- **Whole-page log images remain for new pages, for the first change to a page "
+        "after a checkpoint, and for changes of more than half a page.** Deletes from an "
+        "index hit the last case often (section 12).\n"
         "- **One fsync per commit.** There is no group commit, so durable throughput is "
-        "bounded by the drive's sync latency.\n"
-        "- **B+ tree nodes are decoded and re-encoded whole** on every insert and delete.\n"
+        "bounded by the drive's sync latency. Smaller log records did not change it.\n"
+        "- **B+ tree nodes are decoded and re-encoded whole** on every insert and delete. "
+        "That costs CPU, grows with the page size, and makes index changes larger in the "
+        "log than they need to be.\n"
         "- **Row-at-a-time execution.** Each row passes through a Python generator per "
         "operator and is decoded into a tuple even if most columns are unused.\n"
         "- **Results are materialised** before being returned.\n"
@@ -536,6 +546,130 @@ def render(results: dict[str, Any], images: list[str]) -> str:
         "is evenly spread.\n"
     )
     return "\n".join(parts)
+
+
+def _load_log_volume() -> dict[str, Any] | None:
+    """Results of benchmarks/log_volume.py, if that script has been run."""
+    path = RESULTS_DIR / "log_volume.json"
+    if not path.exists():
+        return None
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return data
+
+
+def _durable_sentence(durable: list[dict[str, Any]] | None) -> str:
+    """The fsync-on comparison, quoted from the data, or a pointer if it was not measured."""
+    if not durable:
+        return (
+            "- **Throughput with fsync on was not measured in this run.** Run "
+            "`python benchmarks/log_volume.py` to include it.\n"
+        )
+    images = next(d for d in durable if not d["deltas"])
+    deltas = next(d for d in durable if d["deltas"])
+    return (
+        f"- **Throughput with fsync on did not change either.** {images['commits']} durable "
+        f"single-row inserts took a median of {images['median_ms']:.1f} ms per commit with "
+        f"whole pages ({images['bytes_per_commit'] / 1000:.1f} KB logged per commit) and "
+        f"{deltas['median_ms']:.1f} ms with deltas ({deltas['bytes_per_commit'] / 1000:.1f} KB), "
+        "because the drive's sync latency dominates. A drive with fast syncs, such as an SSD, "
+        "might show a difference; this one is a hard disk.\n"
+    )
+
+
+def _log_volume_section(data: dict[str, Any]) -> str:
+    """Section 12: what delta log records change, measured by log_volume.py."""
+    results: list[dict[str, Any]] = data["results"]
+    by_workload: dict[str, dict[bool, dict[str, Any]]] = {}
+    by_page_size: dict[int, dict[bool, dict[str, Any]]] = {}
+    for result in results:
+        if result["page_size"] == 4096:
+            by_workload.setdefault(result["workload"], {})[result["deltas"]] = result
+        if result["workload"] == "3,000 single-row inserts":
+            by_page_size.setdefault(result["page_size"], {})[result["deltas"]] = result
+
+    ratios = [
+        pair[True]["commits_per_second"] / pair[False]["commits_per_second"]
+        for pair in by_workload.values()
+    ]
+    low, high = min(ratios), max(ratios)
+    lines = [
+        "## 12. Delta log records\n",
+        "Each workload runs on a fresh database with `log_deltas=False` (a whole page logged "
+        "for every changed page) and with `log_deltas=True` (only the bytes that changed, "
+        "except for new pages, the first change to a page after a checkpoint, and changes of "
+        "more than half a page). `synchronous=False`, so the timings show the cost of building "
+        "and writing log records and not the drive's fsync. Checkpoints are off, so the "
+        "recovery column replays every commit.\n",
+        table(
+            [
+                "Workload",
+                "Log size, images",
+                "Log size, deltas",
+                "Smaller by",
+                "Bytes per commit (deltas)",
+                "Commits/s, images",
+                "Commits/s, deltas",
+                "Recovery ms, images",
+                "Recovery ms, deltas",
+            ],
+            [
+                [
+                    name,
+                    megabytes(pair[False]["log_bytes"]),
+                    megabytes(pair[True]["log_bytes"]),
+                    f"{pair[False]['log_bytes'] / pair[True]['log_bytes']:.1f}x",
+                    num(pair[True]["bytes_per_commit"]),
+                    num(pair[False]["commits_per_second"]),
+                    num(pair[True]["commits_per_second"]),
+                    num(pair[False]["recovery_ms"]),
+                    num(pair[True]["recovery_ms"]),
+                ]
+                for name, pair in by_workload.items()
+            ],
+        ),
+        "\nPage size, 3,000 single-row inserts:\n",
+        table(
+            [
+                "Page size",
+                "Bytes per commit, images",
+                "Bytes per commit, deltas",
+                "Commits/s, deltas",
+            ],
+            [
+                [
+                    num(size),
+                    num(pair[False]["bytes_per_commit"]),
+                    num(pair[True]["bytes_per_commit"]),
+                    num(pair[True]["commits_per_second"]),
+                ]
+                for size, pair in sorted(by_page_size.items())
+            ],
+        ),
+        "\nWhat the numbers show:\n",
+        "- **The log shrinks a lot for small changes**: a single-row insert or update logs "
+        "a few hundred bytes instead of two or three pages.\n"
+        f"- **Throughput with fsync off did not change in a way these runs can tell apart "
+        f"from noise.** The ratio (deltas over whole pages) ran from {low:.2f} to {high:.2f} "
+        "across workloads in this run. The same workload has varied by about 15% between "
+        "runs on this machine, so differences of that size mean nothing. Building the log "
+        "record was not where the time went; parsing, executing and rewriting B+ tree nodes "
+        "were.\n"
+        + _durable_sentence(data.get("durable"))
+        + "- **Bulk inserts barely benefit** (about 1.1 times smaller): most of what they "
+        "write is new pages, which are always logged whole.\n"
+        "- **Deletes benefit least.** A B+ tree node is decoded and re-encoded whole, so "
+        "removing one key shifts many cells and the change often exceeds half a page, "
+        "which is then logged as a full page. Rewriting nodes in place would fix this.\n"
+        "- **The log no longer grows with the page size**, but time per commit still does: "
+        "comparing a changed page against its earlier copy and rewriting a B+ tree node "
+        "both cost more on bigger pages.\n"
+        "- **Recovery was faster where the log shrank most**: for single-row inserts and "
+        "updates it took 1.7 to 2.1 times less time in each of two runs, since there is less "
+        "to read. For deletes and bulk inserts it varied between no change and a modest "
+        "gain, within the noise.\n",
+        "Reproduce: `python benchmarks/log_volume.py`\n",
+    ]
+    return "\n".join(lines)
 
 
 def write_report(results: dict[str, Any]) -> None:

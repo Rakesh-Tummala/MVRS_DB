@@ -10,7 +10,7 @@ What MVRS_DB does not do, stated plainly. Each item is a real difference from a 
 | Types | Booleans, dates, blobs, decimals | Three types only: `INTEGER`, `REAL`, `TEXT`. |
 | Indexes | Composite keys, non-unique secondary indexes | Only the primary key and `UNIQUE` columns are indexed. |
 | Concurrency | Concurrent writers, row-level locks, MVCC, savepoints | One writer at a time; locks are per table. |
-| Logging | Delta log records, group commit, undo logging | Every commit logs whole pages and does its own `fsync`. |
+| Logging | Group commit, undo logging, logical (per-operation) log records | Every commit does its own `fsync`. Page changes are logged as deltas where possible, but new pages, the first change to a page after a checkpoint, and changes over half a page are still logged whole. |
 | B+ tree | Merging or rebalancing after deletes, reverse scans | Emptied leaves are reused by later inserts but never freed. `ORDER BY ... DESC` always sorts. |
 | Storage | Records larger than a page, shrinking the file, compression, encryption | |
 | Interface | Network server, prepared statements, parameter binding, streaming results | Values are written into the SQL text; results are returned as a complete list. |
@@ -39,14 +39,14 @@ What MVRS_DB does not do, stated plainly. Each item is a real difference from a 
 
 ## Performance
 
-It is slow. See `benchmarks/results/REPORT.md` for measurements and the list of known bottlenecks. The largest are whole-page logging, one `fsync` per commit, re-encoding B+ tree nodes on every change, row-at-a-time execution in Python, and parsing SQL text on every call.
+It is slow. See `benchmarks/results/REPORT.md` for measurements and the list of known bottlenecks. The largest are one `fsync` per commit, re-encoding B+ tree nodes on every change (which also makes index changes larger in the log than they need to be), row-at-a-time execution in Python, and parsing SQL text on every call.
 
 The optimiser assumes values are spread evenly between the smallest and largest key. On skewed data its row estimates, and therefore its choices, can be wrong.
 
 ## Future work, in the order I would do it
 
-1. **Delta log records.** The biggest single win for write throughput and log size.
-2. **Group commit.** One `fsync` for several waiting transactions.
+1. **Group commit.** One `fsync` for several waiting transactions. With deltas in place this is the largest remaining cost of a durable commit: measured, a commit takes 23 ms whether it logs 0.3 KB or 8.4 KB, because the drive's sync dominates.
+2. **Edit B+ tree nodes in place** instead of decoding and rewriting them whole. It would cut CPU per insert and make index changes, especially deletes, small enough for deltas (today 26% of single-row deletes exceed half a page and are logged whole).
 3. **Prepared statements with parameters.** Removes parsing from the hot path and removes the need to build SQL strings.
 4. **Outer joins and joins of more than two tables**, which bring join-order optimisation with them.
 5. **Non-unique secondary indexes**, by appending the record ID to the key.

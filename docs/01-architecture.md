@@ -74,7 +74,7 @@ Modules that the original brief's tree did not list, and why they exist:
 4. The B+ tree inserts `key(8) -> record ID`, splitting nodes if a leaf is full.
 5. Every modified page is marked dirty in the buffer pool.
 6. **Phases 1–3:** dirty pages reach disk on eviction or on close. A crash can lose or corrupt data.
-7. **Phase 4 onward:** at commit, the after-images of the dirtied pages plus a commit record are appended to the WAL and `fsync`'d. Only then does the statement report success. The pages themselves are written to the data file later.
+7. **Phase 4 onward:** at commit, a record for each dirtied page (the changed bytes, or the whole page when it is new or was just checkpointed) plus a commit record are appended to the WAL and `fsync`'d. Only then does the statement report success. The pages themselves are written to the data file later.
 
 ## Dependency rule
 

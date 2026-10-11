@@ -38,8 +38,9 @@ Run the tests with:
 | 14 | Aggregates | `12-aggregates-and-joins.md` | `HashAggregate`, `MetadataAggregate` in `execution/operators.py`; `_plan_aggregate` in `planner/planner.py` | `integration/test_aggregates.py` |
 | 15 | Joins | `12-aggregates-and-joins.md` | `planner/scope.py`; `_plan_join` in `planner/planner.py`; `HashJoin`, `IndexJoin` in `execution/operators.py` | `integration/test_joins.py` |
 | 16 | Vector search | `11-vector-search.md` | `vector/distance.py`, `vector/hnsw.py`; `VectorTopK`, `VectorIndexScan` in `execution/operators.py` | `integration/test_vectors.py`, `test_vector_search.py`, `test_vector_index.py` |
+| 17 | Delta log records | `05-wal-and-recovery.md` (section "Log whole pages, or the bytes that changed") | `recovery/delta.py`; `_log_and_commit` in `database.py`; `_rebuild` in `recovery/recovery_manager.py` | `unit/test_delta.py`, `crash_recovery/`, `benchmarks/log_volume.py` |
 
-Topics 14 to 16 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
+Topics 14 to 17 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
 
 ## Questions to be able to answer
 
@@ -76,7 +77,11 @@ Topics 14 to 16 were added after the first thirteen. Each of their design docs e
 * How is a torn page repaired? When can it not be?
 * Why do the crash tests kill a real process instead of raising an exception?
 * What can these tests not tell you? (Power loss.)
-* Why whole-page images instead of per-operation records? What would ARIES add?
+* Why page-level log records instead of per-operation ones? What would ARIES add?
+* What does a delta record contain, and why does it name the previous LSN?
+* Why must the first change to a page after a checkpoint be logged as a full page? What would go wrong with a torn page otherwise?
+* Why are deletes from an index poorly served by deltas, and what would fix that?
+* The log got 24 times smaller for single-row inserts. Why did commit speed show no measurable change, with fsync on or off?
 
 ### SQL and execution
 * What does a lexer do that a parser does not?
