@@ -130,7 +130,7 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 * **Reason:** Rebalancing is the most error-prone part of a B+ tree and PostgreSQL also does without it. Splitting unevenly at the right edge keeps leaves full for keys that arrive in order, which roughly halves index size for auto-numbered keys.
 * **Date:** 2026-10-11
 
-## D-027 — B+ tree nodes are decoded and rewritten whole on change
+## D-027 — B+ tree nodes are decoded and rewritten whole on change (superseded by D-064)
 * **Alternatives:** Edit cells in place inside the page.
 * **Reason:** Split logic over Python lists is short and easy to check. Searches do not pay for it: they binary-search the page directly. Listed as a bottleneck in the benchmark report.
 * **Date:** 2026-10-11
@@ -309,7 +309,7 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 ## D-060 — Group commit by letting waiting threads take turns as the writer of the log
 * **Decision:** Commits append to a shared in-memory buffer. The first thread that needs the log durable becomes the leader: it takes the whole buffer, writes it and calls `fsync` without holding the log's lock, and meanwhile others append to a fresh buffer and wait. The next waiter then leads, covering everything that piled up.
 * **Alternatives:** A dedicated flusher thread; deliberately delaying a commit for a few milliseconds to collect more (PostgreSQL's `commit_delay`).
-* **Reason:** No extra thread, no timer, and a lone commit pays no added delay. Batching happens only when commits genuinely overlap. Measured on a hard disk: 36 commits/s with one thread, 268 with 16, 8.5 commits per `fsync`. A delay would help low concurrency at the price of latency for everyone; not built.
+* **Reason:** No extra thread, no timer, and a lone commit pays no added delay. Batching happens only when commits genuinely overlap. Measured on a hard disk: 36 to 40 commits/s with one thread, 268 to 320 with 16 (two runs), 8.5 commits per `fsync`. A delay would help low concurrency at the price of latency for everyone; not built.
 * **Date:** 2026-10-12
 
 ## D-061 — Early lock release, with a durability wait for readers
@@ -327,6 +327,27 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 ## D-063 — After a log write failure the engine stops, reads included
 * **Alternatives:** Roll the failed commit back in memory and carry on (the earlier behaviour).
 * **Reason:** After early lock release other transactions may already have seen and built on the failed commit, so rolling back only that transaction is no longer possible. Stopping everything until the database is reopened and recovery decides is the only consistent answer.
+* **Date:** 2026-10-12
+
+## D-064 — B+ tree nodes are edited in place (replaces D-027)
+* **Decision:** An insert or delete that does not split changes the node page in place: shift the pointer array by one entry, write or forget one cell, update the header. A delete leaves a hole counted in `frag_bytes`; an insert that has room in total but not in one piece repacks the cells first. Only a split decodes the node into lists.
+* **Alternatives:** Keep decoding and rewriting whole nodes (D-027); a different node layout with fixed-size slots.
+* **Reason:** Measured, not assumed (D-027 had been recorded as a known bottleneck). Insert went from 235 µs to 17 µs on 4 KiB pages and from 1,536 µs to 17 µs on 32 KiB pages, and the cost no longer depends on the page size. The log record for an index change shrank 5 to 7 times, which took deletes from 3.2 times smaller than whole-page logging to 13.9 times. Cost: the node layout has holes, which needs a validator (N1–N3) and a repack path, both tested.
+* **Date:** 2026-10-12
+
+## D-065 — `frag_bytes` reuses the node header's reserved field
+* **Alternatives:** Bump the file format version and add a field.
+* **Reason:** The field was always written as zero, and zero means "no holes", which is exactly what every page written before this change has. Nothing needs migrating, and a page written by the new code is still valid to the old reading code as long as it has no holes.
+* **Date:** 2026-10-12
+
+## D-066 — A leaf with fewer than two keys, or an internal node with fewer than three, accepts an entry whatever the size cap
+* **Alternatives:** Reject, and let the split code cope.
+* **Reason:** A split needs at least two keys in a leaf (three in an internal node) to leave two non-empty halves, and the size cap (`node_capacity`) is a test knob for building deep trees from few keys. This was already the rule before in-place edits; it is recorded here because the in-place path had to reproduce it exactly, and the model-based tests with tiny caps are what check that it does.
+* **Date:** 2026-10-12
+
+## D-067 — Changed byte ranges are found in two levels: 1 KiB chunks, then 32-byte blocks
+* **Alternatives:** Compare every 32-byte block (the first version); recursive bisection; a lower-level comparison written in C.
+* **Reason:** Found by profiling after in-place B+ tree edits (D-064) removed the larger cost. `changed_ranges` was 52% of an insert on 32 KiB pages and 16% on 4 KiB pages, because it looped over every block of every changed page. Skipping unchanged chunks with one comparison each made it 4.9 times cheaper on 32 KiB pages (0.451 s to 0.093 s for 1,200 inserts) with identical output, checked against the original at all four page sizes with edits placed on the chunk edges. It is not free of page-size dependence: it still makes one comparison per chunk.
 * **Date:** 2026-10-12
 
 ## D-019 — Optional dependencies only

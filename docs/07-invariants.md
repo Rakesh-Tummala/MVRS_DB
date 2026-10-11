@@ -58,7 +58,7 @@ A2 is the "no leaks, no double allocation" check that runs after every crash tes
 | T7 | Every record ID in a leaf refers to a live record whose key column encodes to that key |
 | T8 | The root page ID never changes |
 
-`check_invariants()` verifies T1–T6 and T8 on the whole tree. T7 needs the table and is checked by a separate table-level validator.
+Each node page must also satisfy N1–N3 (see `09-btree.md`): its pointers fit below its cells, its cells lie inside the cell area without overlapping, and its hole count matches the space actually unused. `check_invariants()` verifies T1–T6, T8 and N1–N3 on the whole tree. T7 needs the table and is checked by a separate table-level validator.
 
 ## Catalog and data
 
@@ -115,4 +115,4 @@ Every error class derives from `MvrsDbError` in `errors.py`.
 
 ## Checking everything at once
 
-`Database.check()` (also `mvrs_db check <file>`) verifies, for the whole database: P1–P3 for every page, H1–H6 for every heap, T1–T6 and T8 for every index, C1–C4, A1 and A2. It raises the first violation it finds. Every crash test and both model-based tests end by calling it.
+`Database.check()` (also `mvrs_db check <file>`) verifies, for the whole database: P1–P3 for every page, H1–H6 for every heap, T1–T6, T8 and N1–N3 for every index, C1–C4, A1 and A2. It raises the first violation it finds. Every crash test and both model-based tests end by calling it.

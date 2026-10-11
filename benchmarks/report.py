@@ -340,14 +340,19 @@ def render(results: dict[str, Any], images: list[str]) -> str:
             ],
         )
     )
+    drop = 1 - sizes[-1]["load_rows_per_second"] / sizes[0]["load_rows_per_second"]
+    lookups = [e["lookup"]["median_us"] for e in sizes]
     add(
-        "\nLoad throughput falls as the page grows. The log is not the reason: with delta "
-        "records the bytes logged per commit barely change with page size (section 12). "
-        "Profiling shows the cost is CPU per commit that grows with the page: a changed page "
-        "is compared byte-range by byte-range against its earlier copy, and a B+ tree node "
-        "is decoded and re-encoded whole, so a larger node means more entries to process for "
-        "each inserted row. At this table size the index has the same height at every page "
-        "size, so the lookup difference is not from a shallower tree.\n"
+        f"\nLoad throughput is {drop * 100:.0f}% lower at {num(sizes[-1]['page_size'])} bytes "
+        f"than at {num(sizes[0]['page_size'])}, and lookup latency is flat "
+        f"({min(lookups):.0f} to {max(lookups):.0f} microseconds). The log is not the reason: "
+        "with delta records the bytes logged per commit barely change with page size "
+        "(section 12). Profiling the commit path at 32 KiB showed the largest remaining "
+        "page-size cost to be comparing a changed page against its earlier copy, which now "
+        "skips unchanged 1 KiB chunks. Before B+ tree nodes were edited in place (section 14) "
+        "load throughput fell about five-fold over the same range, from roughly 4,700 to "
+        "roughly 900 rows per second. At this table size the index has the same height at "
+        "every page size.\n"
     )
     add(f"Reproduce: `{RUN} page_size`\n")
 
@@ -522,16 +527,21 @@ def render(results: dict[str, Any], images: list[str]) -> str:
     if group is not None:
         add(_group_commit_section(group["results"]))
 
+    after = _load_json("btree_ops.json")
+    before = _load_json("btree_ops_before.json")
+    if after is not None and before is not None:
+        add(_btree_section(before["results"], after["results"]))
+
     add("## Known bottlenecks\n")
     add(
         "- **Whole-page log images remain for new pages, for the first change to a page "
-        "after a checkpoint, and for changes of more than half a page.** Deletes from an "
-        "index hit the last case often (section 12).\n"
-        "- **One fsync per commit.** There is no group commit, so durable throughput is "
-        "bounded by the drive's sync latency. Smaller log records did not change it.\n"
-        "- **B+ tree nodes are decoded and re-encoded whole** on every insert and delete. "
-        "That costs CPU, grows with the page size, and makes index changes larger in the "
-        "log than they need to be.\n"
+        "after a checkpoint, and for changes of more than half a page** (section 12). "
+        "Bulk loads are mostly new pages.\n"
+        "- **A durable commit still costs an fsync.** Commits that overlap share one "
+        "(section 13), but a lone commit pays for its own, and a commit's latency now "
+        "depends on the batch it joins.\n"
+        "- **B+ tree splits decode and re-encode the node whole.** Inserts and deletes that "
+        "do not split edit the page in place (section 14).\n"
         "- **Row-at-a-time execution.** Each row passes through a Python generator per "
         "operator and is decoded into a tuple even if most columns are unused.\n"
         "- **Results are materialised** before being returned.\n"
@@ -550,6 +560,50 @@ def render(results: dict[str, Any], images: list[str]) -> str:
         "is evenly spread.\n"
     )
     return "\n".join(parts)
+
+
+def _btree_section(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> str:
+    """Section 14: B+ tree operations before and after in-place node edits."""
+    rows = []
+    for old, new in zip(before, after, strict=True):
+        size = f"{old['page_size']:,}"
+        for label, field in (("insert", "insert_us"), ("delete", "delete_us")):
+            rows.append(
+                [
+                    f"{label}, {size}-byte pages",
+                    f"{old[field]:,.0f} us",
+                    f"{new[field]:,.0f} us",
+                    f"{old[field] / new[field]:.0f}x",
+                ]
+            )
+        for label, field in (
+            ("random insert", "logged_random_insert"),
+            ("delete", "logged_delete"),
+        ):
+            rows.append(
+                [
+                    f"log bytes, {label}, {size}-byte pages (median)",
+                    f"{old[field]['median_bytes']:,.0f}",
+                    f"{new[field]['median_bytes']:,.0f}",
+                    f"{old[field]['median_bytes'] / new[field]['median_bytes']:.1f}x",
+                ]
+            )
+    lines = [
+        "## 14. B+ tree edits in place\n",
+        "30,000 random keys inserted into a tree held entirely in memory, then looked up, "
+        "then half deleted. Before: every insert and delete decoded the whole node into lists "
+        "and rewrote it. After: the node page is edited in place, and only a split rewrites "
+        'it. "Log bytes" is the size of the delta record the commit path would write for '
+        "one operation (sampled over 2,000 operations).\n",
+        table(["Measurement", "Before", "After", "Improvement"], rows),
+        "\nThe cost of an insert or delete no longer depends on the page size. The log bytes "
+        "still grow with the page, because the pointer array is shifted by one entry from "
+        "the insertion point and the array is longer on a bigger page. Appending in key "
+        "order moves no pointers.\n",
+        'Reproduce: `python benchmarks/btree_ops.py`. The "before" results are kept in '
+        "`benchmarks/results/btree_ops_before.json`.\n",
+    ]
+    return "\n".join(lines)
 
 
 def _load_json(name: str) -> dict[str, Any] | None:
@@ -618,13 +672,22 @@ def _durable_sentence(durable: list[dict[str, Any]] | None) -> str:
         )
     images = next(d for d in durable if not d["deltas"])
     deltas = next(d for d in durable if d["deltas"])
+    gap = images["median_ms"] / deltas["median_ms"] - 1
+    verdict = (
+        "was about the same"
+        if abs(gap) < 0.1
+        else f"differed by {abs(gap) * 100:.0f}% (whole pages {'slower' if gap > 0 else 'faster'})"
+    )
     return (
-        f"- **Throughput with fsync on did not change either.** {images['commits']} durable "
+        f"- **Commit time with fsync on {verdict}.** {images['commits']} durable "
         f"single-row inserts took a median of {images['median_ms']:.1f} ms per commit with "
         f"whole pages ({images['bytes_per_commit'] / 1000:.1f} KB logged per commit) and "
-        f"{deltas['median_ms']:.1f} ms with deltas ({deltas['bytes_per_commit'] / 1000:.1f} KB), "
-        "because the drive's sync latency dominates. A drive with fast syncs, such as an SSD, "
-        "might show a difference; this one is a hard disk.\n"
+        f"{deltas['median_ms']:.1f} ms with deltas ({deltas['bytes_per_commit'] / 1000:.1f} KB). "
+        "The drive's sync latency dominates, and it varies from run to run: across several "
+        "runs on this machine the two modes were within a few percent of each other in most "
+        "and about 40% apart in one, so a single run cannot separate a real effect from "
+        "disk variance. A drive with fast syncs, such as an SSD, might show a difference; "
+        "this one is a hard disk.\n"
     )
 
 
@@ -644,6 +707,8 @@ def _log_volume_section(data: dict[str, Any]) -> str:
         for pair in by_workload.values()
     ]
     low, high = min(ratios), max(ratios)
+    deletes = by_workload["1,500 single-row deletes"]
+    delete_ratio = deletes[False]["log_bytes"] / deletes[True]["log_bytes"]
     lines = [
         "## 12. Delta log records\n",
         "Each workload runs on a fresh database with `log_deltas=False` (a whole page logged "
@@ -700,21 +765,20 @@ def _log_volume_section(data: dict[str, Any]) -> str:
         "\nWhat the numbers show:\n",
         "- **The log shrinks a lot for small changes**: a single-row insert or update logs "
         "a few hundred bytes instead of two or three pages.\n"
-        f"- **Throughput with fsync off did not change in a way these runs can tell apart "
-        f"from noise.** The ratio (deltas over whole pages) ran from {low:.2f} to {high:.2f} "
-        "across workloads in this run. The same workload has varied by about 15% between "
-        "runs on this machine, so differences of that size mean nothing. Building the log "
-        "record was not where the time went; parsing, executing and rewriting B+ tree nodes "
-        "were.\n"
+        f"- **Throughput with fsync off barely depends on the log format.** The ratio (deltas "
+        f"over whole pages) ran from {low:.2f} to {high:.2f} across workloads in this run. "
+        "The same workload has varied by about 15% between runs on this machine, so "
+        "differences of that size mean nothing. Building the log record is a small part "
+        "of the cost of a commit.\n"
         + _durable_sentence(data.get("durable"))
-        + "- **Bulk inserts barely benefit** (about 1.1 times smaller): most of what they "
+        + f"- **Deletes shrank {delete_ratio:.1f} times.** Removing a key from a B+ tree "
+        "node used to rewrite the whole node (about 3 times smaller than whole pages); now "
+        "it closes one gap in the pointer array and leaves the cell as a hole "
+        "(section 14).\n"
+        "- **Bulk inserts barely benefit** (about 1.1 times smaller): most of what they "
         "write is new pages, which are always logged whole.\n"
-        "- **Deletes benefit least.** A B+ tree node is decoded and re-encoded whole, so "
-        "removing one key shifts many cells and the change often exceeds half a page, "
-        "which is then logged as a full page. Rewriting nodes in place would fix this.\n"
-        "- **The log no longer grows with the page size**, but time per commit still does: "
-        "comparing a changed page against its earlier copy and rewriting a B+ tree node "
-        "both cost more on bigger pages.\n"
+        "- **The log no longer grows with the page size** (compare bytes per commit in "
+        "the table above).\n"
         "- **Recovery was faster where the log shrank most**: for single-row inserts and "
         "updates it took 1.7 to 2.1 times less time in each of two runs, since there is less "
         "to read. For deletes and bulk inserts it varied between no change and a modest "

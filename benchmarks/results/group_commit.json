@@ -12,48 +12,48 @@
   "results": [
     {
       "threads": 1,
-      "commits": 145,
-      "commits_per_second": 36.056840799553015,
-      "fsyncs": 145,
+      "commits": 162,
+      "commits_per_second": 40.184575195426845,
+      "fsyncs": 162,
       "commits_per_fsync": 1.0,
-      "median_ms": 22.848900000099093,
-      "p99_ms": 67.31890000082785
+      "median_ms": 22.608399998716777,
+      "p99_ms": 33.88290000293637
     },
     {
       "threads": 2,
-      "commits": 228,
-      "commits_per_second": 56.68787937062844,
-      "fsyncs": 153,
-      "commits_per_fsync": 1.4901960784313726,
-      "median_ms": 32.67029999915394,
-      "p99_ms": 99.37309999804711
+      "commits": 233,
+      "commits_per_second": 57.782234036257044,
+      "fsyncs": 157,
+      "commits_per_fsync": 1.484076433121019,
+      "median_ms": 23.05970000452362,
+      "p99_ms": 111.04949999571545
     },
     {
       "threads": 4,
-      "commits": 357,
-      "commits_per_second": 88.05472751770964,
-      "fsyncs": 144,
-      "commits_per_fsync": 2.4791666666666665,
-      "median_ms": 44.33409999910509,
-      "p99_ms": 78.31479999731528
+      "commits": 395,
+      "commits_per_second": 97.97411846239034,
+      "fsyncs": 159,
+      "commits_per_fsync": 2.4842767295597485,
+      "median_ms": 44.05360000237124,
+      "p99_ms": 89.13059999758843
     },
     {
       "threads": 8,
-      "commits": 612,
-      "commits_per_second": 150.51122909703398,
-      "fsyncs": 137,
-      "commits_per_fsync": 4.467153284671533,
-      "median_ms": 47.3560999998881,
-      "p99_ms": 153.365300000587
+      "commits": 680,
+      "commits_per_second": 168.70161333825072,
+      "fsyncs": 152,
+      "commits_per_fsync": 4.473684210526316,
+      "median_ms": 44.87335000158055,
+      "p99_ms": 147.64210000430467
     },
     {
       "threads": 16,
-      "commits": 1085,
-      "commits_per_second": 267.56305468651675,
-      "fsyncs": 128,
-      "commits_per_fsync": 8.4765625,
-      "median_ms": 58.87529999745311,
-      "p99_ms": 153.81199999683304
+      "commits": 1289,
+      "commits_per_second": 320.07700521329355,
+      "fsyncs": 152,
+      "commits_per_fsync": 8.480263157894736,
+      "median_ms": 45.860099999117665,
+      "p99_ms": 165.94489999988582
     }
   ]
 }

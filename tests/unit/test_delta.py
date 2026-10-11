@@ -114,6 +114,73 @@ def test_any_set_of_edits_round_trips(edits: list[tuple[int, bytes]]) -> None:
         position = offset + length
 
 
+def reference_changed_ranges(before: bytes, after: bytes | bytearray) -> list[tuple[int, int]]:
+    """The straightforward version: compare every 32-byte block, then trim each run."""
+    size = len(after)
+    runs: list[tuple[int, int]] = []
+    start = -1
+    for offset in range(UNLOGGED_PREFIX, size, 32):
+        if before[offset : offset + 32] != after[offset : offset + 32]:
+            if start < 0:
+                start = offset
+        elif start >= 0:
+            runs.append((start, offset))
+            start = -1
+    if start >= 0:
+        runs.append((start, size))
+    out = []
+    for low, high in runs:
+        while before[low] == after[low]:
+            low += 1
+        while before[high - 1] == after[high - 1]:
+            high -= 1
+        out.append((low, high - low))
+    return out
+
+
+# Edits are placed on or around the edges of the 1 KiB chunk grid (which starts at
+# byte 16), because that is where a two-level comparison could go wrong.
+CHUNK_EDGES = [
+    16 + 1024 * k + delta
+    for k in range(32)
+    for delta in (-33, -32, -1, 0, 1, 31, 32)
+    if 16 + 1024 * k + delta >= 0
+]
+EDGE_EDITS = st.lists(
+    st.tuples(
+        st.one_of(st.sampled_from(CHUNK_EDGES), st.integers(16, 32767)),
+        st.binary(min_size=1, max_size=70),
+    ),
+    max_size=10,
+)
+
+
+@settings(max_examples=400)
+@given(EDGE_EDITS, st.sampled_from([4096, 8192, 16384, 32768]))
+def test_two_level_comparison_gives_exactly_the_straightforward_answer(
+    edits: list[tuple[int, bytes]], page_size: int
+) -> None:
+    before = bytes(page_with(3)) + bytes(page_size - PAGE_SIZE)
+    before = before[:page_size]
+    after = bytearray(before)
+    for offset, data in edits:
+        if offset >= page_size:
+            continue
+        end = min(page_size, offset + len(data))
+        after[offset:end] = data[: end - offset]
+    assert len(after) == page_size  # edits overwrite bytes; they never grow the page
+
+    assert changed_ranges(before, after) == reference_changed_ranges(before, after)
+
+
+def test_a_change_in_the_last_partial_chunk_is_found() -> None:
+    before = bytes(4096)
+    after = bytearray(before)
+    after[4095] = 1  # the page ends part-way through a chunk
+
+    assert changed_ranges(before, after) == [(4095, 1)]
+
+
 GOOD = encode_delta(1, 0, page_with(9), [(100, 4), (200, 2)])
 
 

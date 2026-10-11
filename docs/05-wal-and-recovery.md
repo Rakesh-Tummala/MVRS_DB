@@ -28,7 +28,7 @@ During a transaction nothing is logged. At commit, for each page the transaction
 * Structural changes need no special treatment. Allocating a page, changing the free list and writing a catalog record are all just modified pages. The file header is not a page in the buffer pool, so it gets its own record type.
 * An uncommitted transaction leaves at most a partial batch with no commit record, which recovery ignores.
 
-A delta is computed by comparing the page against the copy the buffer pool saved when the transaction first touched it. The comparison runs in 32-byte blocks (a slice comparison, done in C), merges unequal neighbours into ranges, and trims each range to the exact bytes. The first 16 bytes of a page (checksum, page ID, LSN) are never part of a delta: the checksum is recomputed whenever the page is written, the page ID never changes, and the LSN comes from the record itself.
+A delta is computed by comparing the page against the copy the buffer pool saved when the transaction first touched it. The comparison works in two levels: the page is compared in 1 KiB chunks (one slice comparison each, done in C), and only a chunk that differs is examined in 32-byte blocks. Unequal neighbouring blocks merge into one range, and each range is trimmed to the exact bytes. A page usually changes in a few places, so most chunks cost a single comparison. The first version compared every block, which cost time proportional to the page size and came to about half the cost of an insert on 32 KiB pages (D-067). The first 16 bytes of a page (checksum, page ID, LSN) are never part of a delta: the checksum is recomputed whenever the page is written, the page ID never changes, and the LSN comes from the record itself.
 
 **Why the first change after a checkpoint is a full image.** A delta can only be applied to the exact page it was computed from. If the disk tore that page while writing it, there would be nothing intact to apply deltas to. A full image of the page in the log, from before it could have been written, is what makes recovery possible. A checkpoint empties the log, so the next change to each page logs an image again.
 
@@ -99,13 +99,13 @@ Measured on the development machine (hard disk, `fsync` about 23 ms), durable si
 
 | Threads | Commits per second | Commits per `fsync` | Median commit | 99th percentile |
 |---|---|---|---|---|
-| 1 | 36 | 1.0 | 22.8 ms | 67 ms |
-| 2 | 57 | 1.5 | 32.7 ms | 99 ms |
-| 4 | 88 | 2.5 | 44.3 ms | 78 ms |
-| 8 | 151 | 4.5 | 47.4 ms | 153 ms |
-| 16 | 268 | 8.5 | 58.9 ms | 154 ms |
+| 1 | 40 | 1.0 | 22.6 ms | 34 ms |
+| 2 | 58 | 1.5 | 23.1 ms | 111 ms |
+| 4 | 98 | 2.5 | 44.1 ms | 89 ms |
+| 8 | 169 | 4.5 | 44.9 ms | 148 ms |
+| 16 | 320 | 8.5 | 45.9 ms | 166 ms |
 
-Throughput grows with the number of threads, up to 7.4 times at 16. **Latency grows too**: each commit now waits for a shared batch, not just its own `fsync`. This is the usual trade. A single thread is unaffected. Reproduce: `python benchmarks/group_commit.py`.
+Throughput grows with the number of threads, up to 8.0 times at 16. **Latency grows too**: each commit now waits for a shared batch, not just its own `fsync`; the median doubles from 23 ms to 46 ms and the 99th percentile is several times higher. This is the usual trade. A single thread is unaffected. An earlier run of the same benchmark, before other speed-ups, gave 36 commits/s for one thread and 268 for 16 (7.4 times), so figures like these move by 10 to 20% between runs. Reproduce: `python benchmarks/group_commit.py`.
 
 ### Early lock release
 
@@ -185,7 +185,7 @@ On open, before anything else reads the data file:
 
 ## What is tested
 
-58 tests in `tests/crash_recovery/` start a child process, kill it with `os._exit` at an injected point (`mvrs_db/faults.py`), reopen, and check durability, atomicity and `Database.check()`. Two workloads are used: row changes across two indexes, and creating and dropping tables. Delta logging is on in all of them, and one test asserts that recovery after a kill really did rebuild pages by replaying deltas.
+60 tests in `tests/crash_recovery/test_crash.py` start a child process, kill it with `os._exit` at an injected point (`mvrs_db/faults.py`), reopen, and check durability, atomicity and `Database.check()`. Two workloads are used: row changes across two indexes, and creating and dropping tables. Delta logging is on in all of them, and one test asserts that recovery after a kill really did rebuild pages by replaying deltas.
 
 `tests/crash_recovery/test_crash_concurrent.py` does the same with six threads committing at once, each running two-statement transactions (insert a row, bump a counter). Fourteen kill points cover buffered-but-unwritten commits, a leader killed mid-write and mid-`fsync`, and kills during page eviction and checkpoints while commits are pending. After recovery every acknowledged commit must be present, each thread's counter must equal its row count (no half-applied transaction), its rows must form an unbroken run, and at most one extra transaction per thread may have survived. Making commits return before they are durable makes these tests fail.
 
@@ -202,7 +202,7 @@ On open, before anything else reads the data file:
 | Commit record fsynced, commit not yet returned | present |
 | Start of, middle of, and end of a checkpoint | present |
 | Between rewriting the log header and truncating it | present |
-| Halfway through a page write, at four different moments (the 1st, 9th, 40th and 50th page write) | either, never half |
+| Halfway through a page write, at five different moments (the 1st, 9th, 40th, 50th and 120th page write) | either, never half |
 | Six threads committing: buffered, mid-write, mid-`fsync`, after `fsync`, during eviction, during checkpoints | every acknowledged commit present; no half-applied transaction |
 | During database creation | a usable empty database |
 | During recovery (five points), twice in a row | same result as uninterrupted recovery |

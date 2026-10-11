@@ -1,6 +1,6 @@
 # MVRS_DB benchmark report
 
-Generated 2026-10-11T23:25:27 by `python benchmarks/run_benchmarks.py` (MVRS_DB 0.1.0). Every number below was measured in that run and is stored in `results.json` next to this file.
+Generated 2026-10-12T01:13:57 by `python benchmarks/run_benchmarks.py` (MVRS_DB 0.1.0). Every number below was measured in that run and is stored in `results.json` next to this file.
 
 ## Read this first
 
@@ -29,9 +29,9 @@ Generated 2026-10-11T23:25:27 by `python benchmarks/run_benchmarks.py` (MVRS_DB 
 
 | Rows | Seconds | Rows/second | File size | Pages |
 |---|---|---|---|---|
-| 1,000 | 0.19 | 5,360 | 0.11 MB | 29 |
-| 10,000 | 1.87 | 5,360 | 1.00 MB | 255 |
-| 100,000 | 28.40 | 3,521 | 9.81 MB | 2,511 |
+| 1,000 | 0.06 | 16,760 | 0.11 MB | 29 |
+| 10,000 | 0.55 | 18,310 | 1.00 MB | 255 |
+| 100,000 | 6.50 | 15,394 | 9.81 MB | 2,511 |
 
 Reproduce: `python benchmarks/run_benchmarks.py --only load`
 
@@ -41,11 +41,11 @@ Reproduce: `python benchmarks/run_benchmarks.py --only load`
 
 | Rows | Index median | p95 | p99 | After reopen median | Full scan median | Speedup |
 |---|---|---|---|---|---|---|
-| 1,000 | 85.7 | 90.3 | 124.2 | 85.5 | 1,941 | 23x |
-| 10,000 | 113.3 | 124.1 | 172.2 | 114.5 | 19,076 | 168x |
-| 100,000 | 196.6 | 219.3 | 350.9 | 198.4 | 195,816 | 996x |
+| 1,000 | 81.3 | 86.2 | 147.5 | 81.4 | 1,978 | 24x |
+| 10,000 | 83.1 | 92.9 | 140.0 | 83.2 | 19,056 | 229x |
+| 100,000 | 93.4 | 126.5 | 165.6 | 98.1 | 200,053 | 2,142x |
 
-Parsing the lookup statement alone takes a median of 15.5 microseconds, so roughly that much of each index lookup is the SQL front end, not storage. Index latency grows slowly with table size (one more tree level); scan latency grows in proportion to it.
+Parsing the lookup statement alone takes a median of 15.4 microseconds, so roughly that much of each index lookup is the SQL front end, not storage. Index latency grows slowly with table size (one more tree level); scan latency grows in proportion to it.
 
 ![Point lookup latency](lookup.png)
 
@@ -53,20 +53,20 @@ Reproduce: `python benchmarks/run_benchmarks.py --only lookup`
 
 ## 3. Range scans and ORDER BY
 
-100,000 rows. Full table scan: **409,936 rows/second**.
+100,000 rows. Full table scan: **401,427 rows/second**.
 
 | Rows in range | Plan chosen | Milliseconds | Rows/second |
 |---|---|---|---|
-| 10 | IndexScan | 0.93 | 10,745 |
-| 100 | IndexScan | 1.24 | 80,561 |
-| 1,000 | IndexScan | 5.44 | 183,949 |
-| 10,000 | IndexScan | 45.27 | 220,874 |
+| 10 | IndexScan | 0.65 | 15,344 |
+| 100 | IndexScan | 0.94 | 106,519 |
+| 1,000 | IndexScan | 5.04 | 198,460 |
+| 10,000 | IndexScan | 47.15 | 212,085 |
 
 | Query | Milliseconds |
 |---|---|
-| `ORDER BY id LIMIT 10` (walks the index, stops after 10) | 0.55 |
-| `ORDER BY grp LIMIT 10` (scans everything, keeps the best 10) | 239.53 |
-| `ORDER BY grp` (scans and sorts everything) | 308.39 |
+| `ORDER BY id LIMIT 10` (walks the index, stops after 10) | 0.27 |
+| `ORDER BY grp LIMIT 10` (scans everything, keeps the best 10) | 246.16 |
+| `ORDER BY grp` (scans and sorts everything) | 322.43 |
 
 Reproduce: `python benchmarks/run_benchmarks.py --only range`
 
@@ -76,10 +76,10 @@ Each transaction is one `INSERT` statement. With fsync on, commit returns only a
 
 | Configuration | Transactions/s | Rows/s | Median ms | p95 ms | p99 ms |
 |---|---|---|---|---|---|
-| fsync on, 1 row per transaction | 35 | 35 | 22.99 | 34.07 | 54.96 |
-| fsync off, 1 row per transaction | 3,321 | 3,321 | 0.28 | 0.50 | 0.54 |
-| fsync on, 100 rows per transaction | 16 | 1,629 | 56.15 | 78.34 | 155.08 |
-| fsync off, 100 rows per transaction | 55 | 5,464 | 18.66 | 24.21 | 26.48 |
+| fsync on, 1 row per transaction | 35 | 35 | 22.98 | 34.07 | 56.21 |
+| fsync off, 1 row per transaction | 6,178 | 6,178 | 0.14 | 0.29 | 0.35 |
+| fsync on, 100 rows per transaction | 21 | 2,080 | 44.14 | 56.39 | 155.19 |
+| fsync off, 100 rows per transaction | 195 | 19,538 | 5.08 | 5.56 | 6.46 |
 
 Batching rows into one transaction is the cheap way to get throughput with durability: the fsync cost is paid once per transaction, not once per row.
 
@@ -93,11 +93,11 @@ Reproduce: `python benchmarks/run_benchmarks.py --only commit`
 
 | Frames | Pool memory | Hit ratio | Median us | p95 us | p99 us |
 |---|---|---|---|---|---|
-| 16 | 0.06 MB | 79.3% | 223.2 | 271.8 | 391.4 |
-| 64 | 0.25 MB | 80.8% | 222.9 | 274.7 | 389.9 |
-| 256 | 1.00 MB | 83.2% | 222.7 | 245.5 | 372.9 |
-| 1,024 | 4.00 MB | 93.0% | 211.5 | 236.4 | 364.2 |
-| 4,096 | 16.00 MB | 99.6% | 197.8 | 229.0 | 340.3 |
+| 16 | 0.06 MB | 79.3% | 119.9 | 183.1 | 276.6 |
+| 64 | 0.25 MB | 80.8% | 133.2 | 275.9 | 369.2 |
+| 256 | 1.00 MB | 83.2% | 129.8 | 237.5 | 313.8 |
+| 1,024 | 4.00 MB | 93.0% | 115.5 | 198.5 | 280.4 |
+| 4,096 | 16.00 MB | 99.6% | 94.6 | 142.7 | 230.9 |
 
 Misses here are served from the operating system's file cache, not the disk, so the penalty shown is the cost of a system call, a checksum and an eviction. On a cold disk the gap would be far larger.
 
@@ -111,12 +111,12 @@ Reproduce: `python benchmarks/run_benchmarks.py --only buffer_pool`
 
 | Page size | Load rows/s | File size | Pages | Index height | Lookup median us | Full scan ms |
 |---|---|---|---|---|---|---|
-| 4,096 | 4,871 | 2.95 MB | 755 | 2 | 176.1 | 71.9 |
-| 8,192 | 3,076 | 2.94 MB | 376 | 2 | 129.6 | 71.1 |
-| 16,384 | 1,730 | 2.97 MB | 190 | 2 | 107.4 | 70.4 |
-| 32,768 | 919 | 3.03 MB | 97 | 2 | 96.3 | 70.8 |
+| 4,096 | 17,128 | 2.95 MB | 755 | 2 | 85.7 | 74.2 |
+| 8,192 | 16,506 | 2.94 MB | 376 | 2 | 85.3 | 73.8 |
+| 16,384 | 15,686 | 2.97 MB | 190 | 2 | 85.8 | 76.7 |
+| 32,768 | 13,267 | 3.03 MB | 97 | 2 | 85.4 | 73.9 |
 
-Load throughput falls as the page grows. The log is not the reason: with delta records the bytes logged per commit barely change with page size (section 12). Profiling shows the cost is CPU per commit that grows with the page: a changed page is compared byte-range by byte-range against its earlier copy, and a B+ tree node is decoded and re-encoded whole, so a larger node means more entries to process for each inserted row. At this table size the index has the same height at every page size, so the lookup difference is not from a shallower tree.
+Load throughput is 23% lower at 32,768 bytes than at 4,096, and lookup latency is flat (85 to 86 microseconds). The log is not the reason: with delta records the bytes logged per commit barely change with page size (section 12). Profiling the commit path at 32 KiB showed the largest remaining page-size cost to be comparing a changed page against its earlier copy, which now skips unchanged 1 KiB chunks. Before B+ tree nodes were edited in place (section 14) load throughput fell about five-fold over the same range, from roughly 4,700 to roughly 900 rows per second. At this table size the index has the same height at every page size.
 
 Reproduce: `python benchmarks/run_benchmarks.py --only page_size`
 
@@ -124,8 +124,8 @@ Reproduce: `python benchmarks/run_benchmarks.py --only page_size`
 
 | Indexes | Rows | Insert rows/s |
 |---|---|---|
-| primary key only | 30,000 | 4,885 |
-| primary key + unique text | 30,000 | 2,757 |
+| primary key only | 30,000 | 17,874 |
+| primary key + unique text | 30,000 | 11,374 |
 
 There is no separate `CREATE INDEX`, so index build time is part of loading. Each index adds a uniqueness check and an insert per row.
 
@@ -137,9 +137,9 @@ Small transactions (10 rows each) with checkpoints disabled, so every change is 
 
 | Commits in log | Log size | Records | Pages restored | Recovery ms | Clean open+close ms |
 |---|---|---|---|---|---|
-| 100 | 0.22 MB | 360 | 28 | 100.5 | 233.6 |
-| 1,000 | 2.03 MB | 3,545 | 254 | 166.7 | 111.1 |
-| 5,000 | 10.05 MB | 17,680 | 1,024 | 386.8 | 67.6 |
+| 100 | 0.22 MB | 360 | 28 | 110.4 | 133.0 |
+| 1,000 | 2.03 MB | 3,545 | 254 | 164.9 | 133.4 |
+| 5,000 | 10.05 MB | 17,680 | 1,024 | 444.7 | 99.2 |
 
 Recovery reads the whole log but writes each page once, however many records (images and deltas) the log holds for it. Recovery time therefore follows log size, and the default 8 MB checkpoint threshold bounds it.
 
@@ -151,9 +151,9 @@ Peak Python heap measured with `tracemalloc` (which itself slows the run and doe
 
 | Pool frames | Pool capacity | Peak while loading | Peak during `SELECT *` |
 |---|---|---|---|
-| 64 | 0.25 MB | 1.07 MB | 7.35 MB |
+| 64 | 0.25 MB | 1.05 MB | 7.34 MB |
 | 1,024 | 4.00 MB | 3.85 MB | 10.19 MB |
-| 8,192 | 32.00 MB | 3.85 MB | 10.20 MB |
+| 8,192 | 32.00 MB | 3.85 MB | 10.19 MB |
 
 30,000 rows. A result set is materialised in full before `execute()` returns, so `SELECT *` on a large table costs memory in proportion to the result, independent of the buffer pool.
 
@@ -165,19 +165,19 @@ Reproduce: `python benchmarks/run_benchmarks.py --only memory`
 
 | Matching | Index scan ms | Seq scan ms | Faster | Planner chose | Correct? |
 |---|---|---|---|---|---|
-| 0.1% | 0.37 | 96.32 | index | index | yes |
-| 1% | 2.00 | 94.52 | index | index | yes |
-| 5% | 9.16 | 97.42 | index | index | yes |
-| 10% | 18.19 | 95.56 | index | index | yes |
-| 20% | 36.67 | 97.05 | index | index | yes |
-| 30% | 55.04 | 96.14 | index | index | yes |
-| 40% | 74.43 | 96.66 | index | index | yes |
-| 50% | 92.63 | 97.40 | index | seq | no (1.05x slower) |
-| 60% | 111.32 | 97.39 | seq | seq | yes |
-| 80% | 148.29 | 98.40 | seq | seq | yes |
-| 100% | 185.12 | 99.48 | seq | seq | yes |
+| 0.1% | 0.33 | 101.69 | index | index | yes |
+| 1% | 1.95 | 99.82 | index | index | yes |
+| 5% | 9.24 | 99.99 | index | index | yes |
+| 10% | 19.03 | 99.20 | index | index | yes |
+| 20% | 38.78 | 99.68 | index | index | yes |
+| 30% | 57.12 | 100.30 | index | index | yes |
+| 40% | 79.43 | 100.03 | index | index | yes |
+| 50% | 99.28 | 102.78 | index | seq | no (1.04x slower) |
+| 60% | 118.69 | 111.20 | seq | seq | yes |
+| 80% | 160.36 | 103.83 | seq | seq | yes |
+| 100% | 195.54 | 106.44 | seq | seq | yes |
 
-The planner was wrong at 1 of 11 points, all near the crossover, where the two plans cost almost the same; the worst case was 1.05x slower than the better plan.
+The planner was wrong at 1 of 11 points, all near the crossover, where the two plans cost almost the same; the worst case was 1.04x slower than the better plan.
 
 The crossover is far to the right of what a disk-bound engine would show, because with a warm cache a heap fetch through the index is a dictionary lookup, not a seek. The constants were fitted with `benchmarks/calibrate_optimizer.py`.
 
@@ -193,9 +193,9 @@ Identical SQL statements, 100,000 rows, one transaction per 500-row `INSERT`, no
 
 | Operation | MVRS_DB | SQLite | SQLite is faster by |
 |---|---|---|---|
-| Insert, rows/second | 4,105 | 343,444 | 84x |
-| Point lookup, median microseconds | 194.9 | 26.9 | 7x |
-| Full scan, milliseconds | 239.4 | 68.9 | 3x |
+| Insert, rows/second | 15,802 | 352,006 | 22x |
+| Point lookup, median microseconds | 94.6 | 26.9 | 4x |
+| Full scan, milliseconds | 254.5 | 71.2 | 4x |
 
 Reproduce: `python benchmarks/run_benchmarks.py --only sqlite`
 
@@ -205,27 +205,27 @@ Each workload runs on a fresh database with `log_deltas=False` (a whole page log
 
 | Workload | Log size, images | Log size, deltas | Smaller by | Bytes per commit (deltas) | Commits/s, images | Commits/s, deltas | Recovery ms, images | Recovery ms, deltas |
 |---|---|---|---|---|---|---|---|---|
-| 3,000 single-row inserts | 24.04 MB | 1.00 MB | 24.0x | 350 | 3,125 | 2,679 | 244 | 134 |
-| 60 inserts of 500 rows | 3.68 MB | 3.27 MB | 1.1x | 57,213 | 9 | 9 | 198 | 211 |
-| 1,500 single-row updates | 6.17 MB | 0.44 MB | 14.0x | 315 | 1,548 | 1,603 | 278 | 165 |
-| 1,500 single-row deletes | 12.22 MB | 3.83 MB | 3.2x | 2,676 | 1,160 | 1,225 | 277 | 165 |
+| 3,000 single-row inserts | 24.04 MB | 1.00 MB | 24.0x | 350 | 6,112 | 6,224 | 266 | 134 |
+| 60 inserts of 500 rows | 3.68 MB | 3.27 MB | 1.1x | 57,213 | 32 | 33 | 165 | 165 |
+| 1,500 single-row updates | 6.17 MB | 0.44 MB | 14.0x | 315 | 3,045 | 3,958 | 200 | 121 |
+| 1,500 single-row deletes | 12.22 MB | 0.88 MB | 13.9x | 615 | 3,644 | 3,682 | 167 | 111 |
 
 Page size, 3,000 single-row inserts:
 
 | Page size | Bytes per commit, images | Bytes per commit, deltas | Commits/s, deltas |
 |---|---|---|---|
-| 4,096 | 8,401 | 350 | 2,679 |
-| 16,384 | 32,988 | 361 | 1,167 |
-| 32,768 | 65,761 | 376 | 673 |
+| 4,096 | 8,401 | 350 | 6,224 |
+| 16,384 | 32,988 | 361 | 5,808 |
+| 32,768 | 65,761 | 376 | 5,052 |
 
 What the numbers show:
 
 - **The log shrinks a lot for small changes**: a single-row insert or update logs a few hundred bytes instead of two or three pages.
-- **Throughput with fsync off did not change in a way these runs can tell apart from noise.** The ratio (deltas over whole pages) ran from 0.86 to 1.06 across workloads in this run. The same workload has varied by about 15% between runs on this machine, so differences of that size mean nothing. Building the log record was not where the time went; parsing, executing and rewriting B+ tree nodes were.
-- **Throughput with fsync on did not change either.** 150 durable single-row inserts took a median of 23.0 ms per commit with whole pages (8.4 KB logged per commit) and 22.8 ms with deltas (0.3 KB), because the drive's sync latency dominates. A drive with fast syncs, such as an SSD, might show a difference; this one is a hard disk.
+- **Throughput with fsync off barely depends on the log format.** The ratio (deltas over whole pages) ran from 1.01 to 1.30 across workloads in this run. The same workload has varied by about 15% between runs on this machine, so differences of that size mean nothing. Building the log record is a small part of the cost of a commit.
+- **Commit time with fsync on was about the same.** 150 durable single-row inserts took a median of 22.7 ms per commit with whole pages (8.4 KB logged per commit) and 22.8 ms with deltas (0.3 KB). The drive's sync latency dominates, and it varies from run to run: across several runs on this machine the two modes were within a few percent of each other in most and about 40% apart in one, so a single run cannot separate a real effect from disk variance. A drive with fast syncs, such as an SSD, might show a difference; this one is a hard disk.
+- **Deletes shrank 13.9 times.** Removing a key from a B+ tree node used to rewrite the whole node (about 3 times smaller than whole pages); now it closes one gap in the pointer array and leaves the cell as a hole (section 14).
 - **Bulk inserts barely benefit** (about 1.1 times smaller): most of what they write is new pages, which are always logged whole.
-- **Deletes benefit least.** A B+ tree node is decoded and re-encoded whole, so removing one key shifts many cells and the change often exceeds half a page, which is then logged as a full page. Rewriting nodes in place would fix this.
-- **The log no longer grows with the page size**, but time per commit still does: comparing a changed page against its earlier copy and rewriting a B+ tree node both cost more on bigger pages.
+- **The log no longer grows with the page size** (compare bytes per commit in the table above).
 - **Recovery was faster where the log shrank most**: for single-row inserts and updates it took 1.7 to 2.1 times less time in each of two runs, since there is less to read. For deletes and bulk inserts it varied between no change and a modest gain, within the noise.
 
 Reproduce: `python benchmarks/log_volume.py`
@@ -236,21 +236,40 @@ Each thread runs durable single-row `INSERT` transactions (fsync on) into one ta
 
 | Threads | Commits/s | Versus one thread | Commits per fsync | Median ms | p99 ms |
 |---|---|---|---|---|---|
-| 1 | 36 | 1.0x | 1.0 | 22.8 | 67.3 |
-| 2 | 57 | 1.6x | 1.5 | 32.7 | 99.4 |
-| 4 | 88 | 2.4x | 2.5 | 44.3 | 78.3 |
-| 8 | 151 | 4.2x | 4.5 | 47.4 | 153.4 |
-| 16 | 268 | 7.4x | 8.5 | 58.9 | 153.8 |
+| 1 | 40 | 1.0x | 1.0 | 22.6 | 33.9 |
+| 2 | 58 | 1.4x | 1.5 | 23.1 | 111.0 |
+| 4 | 98 | 2.4x | 2.5 | 44.1 | 89.1 |
+| 8 | 169 | 4.2x | 4.5 | 44.9 | 147.6 |
+| 16 | 320 | 8.0x | 8.5 | 45.9 | 165.9 |
 
 Throughput rises with the number of threads because each fsync now serves several commits. **Latency rises as well**: a commit waits for a shared batch and not only for its own fsync, so the median grows even as total throughput does. A single thread is unaffected. The gain is bounded by how many commits overlap, and the hard disk's fsync time sets the scale; a drive with fast syncs would show a smaller gain.
 
 Reproduce: `python benchmarks/group_commit.py`
 
+## 14. B+ tree edits in place
+
+30,000 random keys inserted into a tree held entirely in memory, then looked up, then half deleted. Before: every insert and delete decoded the whole node into lists and rewrote it. After: the node page is edited in place, and only a split rewrites it. "Log bytes" is the size of the delta record the commit path would write for one operation (sampled over 2,000 operations).
+
+| Measurement | Before | After | Improvement |
+|---|---|---|---|
+| insert, 4,096-byte pages | 235 us | 18 us | 13x |
+| delete, 4,096-byte pages | 161 us | 17 us | 10x |
+| log bytes, random insert, 4,096-byte pages (median) | 735 | 137 | 5.4x |
+| log bytes, delete, 4,096-byte pages (median) | 705 | 121 | 5.8x |
+| insert, 32,768-byte pages | 1,536 us | 17 us | 88x |
+| delete, 32,768-byte pages | 1,454 us | 18 us | 83x |
+| log bytes, random insert, 32,768-byte pages (median) | 7,162 | 993 | 7.2x |
+| log bytes, delete, 32,768-byte pages (median) | 6,780 | 928 | 7.3x |
+
+The cost of an insert or delete no longer depends on the page size. The log bytes still grow with the page, because the pointer array is shifted by one entry from the insertion point and the array is longer on a bigger page. Appending in key order moves no pointers.
+
+Reproduce: `python benchmarks/btree_ops.py`. The "before" results are kept in `benchmarks/results/btree_ops_before.json`.
+
 ## Known bottlenecks
 
-- **Whole-page log images remain for new pages, for the first change to a page after a checkpoint, and for changes of more than half a page.** Deletes from an index hit the last case often (section 12).
-- **One fsync per commit.** There is no group commit, so durable throughput is bounded by the drive's sync latency. Smaller log records did not change it.
-- **B+ tree nodes are decoded and re-encoded whole** on every insert and delete. That costs CPU, grows with the page size, and makes index changes larger in the log than they need to be.
+- **Whole-page log images remain for new pages, for the first change to a page after a checkpoint, and for changes of more than half a page** (section 12). Bulk loads are mostly new pages.
+- **A durable commit still costs an fsync.** Commits that overlap share one (section 13), but a lone commit pays for its own, and a commit's latency now depends on the batch it joins.
+- **B+ tree splits decode and re-encode the node whole.** Inserts and deletes that do not split edit the page in place (section 14).
 - **Row-at-a-time execution.** Each row passes through a Python generator per operator and is decoded into a tuple even if most columns are unused.
 - **Results are materialised** before being returned.
 - **The SQL text is parsed on every call.** There are no prepared statements.

@@ -45,22 +45,38 @@ from mvrs_db.errors import CorruptWalError
 _HEAD = struct.Struct("<IQH")
 _RANGE = struct.Struct("<HH")
 _BLOCK = 32
+_CHUNK = 32 * _BLOCK  # 1 KiB; a whole number of blocks, so both levels share one grid
 # Bytes 0-15 hold the checksum, the page ID and the LSN; see the module docstring.
 UNLOGGED_PREFIX = 16
 
 
 def changed_ranges(before: bytes, after: bytes | bytearray) -> list[tuple[int, int]]:
-    """(offset, length) of every run of bytes that differs, ignoring the first 16 bytes."""
+    """(offset, length) of every run of bytes that differs, ignoring the first 16 bytes.
+
+    Two levels. The page is compared in 1 KiB chunks, each with one slice
+    comparison (which runs in C and stops at the first difference). Only a chunk
+    that differs is then examined in 32-byte blocks. A page usually changes in a
+    handful of places, so most chunks are skipped after a single comparison;
+    comparing every block would cost time proportional to the page size, which
+    came to half the cost of an insert on 32 KiB pages.
+    """
     size = len(after)
     ranges: list[tuple[int, int]] = []
     start = -1
-    for offset in range(UNLOGGED_PREFIX, size, _BLOCK):
-        if before[offset : offset + _BLOCK] != after[offset : offset + _BLOCK]:
-            if start < 0:
-                start = offset
-        elif start >= 0:
-            ranges.append((start, offset))
-            start = -1
+    for chunk in range(UNLOGGED_PREFIX, size, _CHUNK):
+        chunk_end = min(chunk + _CHUNK, size)
+        if before[chunk:chunk_end] == after[chunk:chunk_end]:
+            if start >= 0:
+                ranges.append((start, chunk))
+                start = -1
+            continue
+        for offset in range(chunk, chunk_end, _BLOCK):
+            if before[offset : offset + _BLOCK] != after[offset : offset + _BLOCK]:
+                if start < 0:
+                    start = offset
+            elif start >= 0:
+                ranges.append((start, offset))
+                start = -1
     if start >= 0:
         ranges.append((start, size))
 

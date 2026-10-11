@@ -1,0 +1,62 @@
+{
+  "environment": {
+    "os": "Windows 11 (build 10.0.26200)",
+    "python": "CPython 3.13.7",
+    "machine": "AMD64",
+    "logical_cpus": "8",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz",
+    "ram": "15.8 GB",
+    "drive": "W: HDD / RAID / TOSHIBA MQ04ABF100",
+    "defender_realtime": "on"
+  },
+  "results": [
+    {
+      "page_size": 4096,
+      "insert_us": 234.88474333328972,
+      "lookup_us": 11.138426666730084,
+      "delete_us": 161.0636199999135,
+      "logged_random_insert": {
+        "median_bytes": 735.0,
+        "mean_bytes": 786.5635,
+        "p95_bytes": 1680,
+        "whole_page_share": 0.0015
+      },
+      "logged_delete": {
+        "median_bytes": 705.0,
+        "mean_bytes": 752.424,
+        "p95_bytes": 1620,
+        "whole_page_share": 0.001
+      },
+      "logged_append": {
+        "median_bytes": 45.0,
+        "mean_bytes": 64.007,
+        "p95_bytes": 72,
+        "whole_page_share": 0.004
+      }
+    },
+    {
+      "page_size": 32768,
+      "insert_us": 1535.7586199999787,
+      "lookup_us": 11.368483333353652,
+      "delete_us": 1453.9679266667613,
+      "logged_random_insert": {
+        "median_bytes": 7162.5,
+        "mean_bytes": 7358.0925,
+        "p95_bytes": 14190,
+        "whole_page_share": 0.0
+      },
+      "logged_delete": {
+        "median_bytes": 6780.0,
+        "mean_bytes": 7017.397,
+        "p95_bytes": 13965,
+        "whole_page_share": 0.0
+      },
+      "logged_append": {
+        "median_bytes": 45.0,
+        "mean_bytes": 61.679,
+        "p95_bytes": 46,
+        "whole_page_share": 0.0005
+      }
+    }
+  ]
+}

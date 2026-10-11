@@ -35,7 +35,12 @@ pytestmark = pytest.mark.crash
 WORKER = Path(__file__).resolve().parent / "worker.py"
 TRANSACTIONS = 30
 SMALL_POOL = 24  # frames: forces committed pages to be written between checkpoints
-SMALL_LOG = 96 * 1024  # bytes: forces a checkpoint every few transactions
+# Bytes of log that trigger a checkpoint. This has to shrink as the log records do
+# (deltas, then in-place index edits): at 96 KiB the "rows" workload made only three
+# checkpoints, one of them the final one at close, and the crash points below that
+# count checkpoints and page writes stopped meaning what their names say. At 32 KiB
+# both workloads make about a dozen checkpoints and well over 100 page writes.
+SMALL_LOG = 32 * 1024
 HUGE_LOG = 1 << 30  # never checkpoint
 
 
@@ -135,10 +140,8 @@ CRASH_POINTS = [
     ("disk.torn_page_write:1", None),
     ("disk.torn_page_write:9", None),
     ("disk.torn_page_write:40", None),
-    # The "rows" workload makes 50 to 59 page writes in all, so 50 is the latest
-    # one both workloads reach. (With whole-page logging it made more; deltas
-    # shrink the log, so checkpoints, and the page writes they cause, come less often.)
     ("disk.torn_page_write:50", None),
+    ("disk.torn_page_write:120", None),
 ]
 
 

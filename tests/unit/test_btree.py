@@ -11,6 +11,7 @@ from mvrs_db.errors import CorruptIndexError, DuplicateKeyError, KeyTooLargeErro
 from mvrs_db.index import btree_node as node
 from mvrs_db.index.btree import BTree
 from mvrs_db.index.keys import encode_key
+from mvrs_db.recovery.delta import changed_ranges, delta_size
 from mvrs_db.storage.buffer_pool import BufferPool
 from mvrs_db.storage.disk_manager import DiskManager
 from mvrs_db.storage.heap_file import RecordId
@@ -395,4 +396,105 @@ def test_corrupt_cell_pointer_is_reported_not_crashed_on(tmp_path: Path) -> None
 
     with pytest.raises(CorruptIndexError):
         list(tree.scan())
+    disk.close()
+
+
+def test_check_catches_a_node_whose_hole_accounting_is_wrong(tmp_path: Path) -> None:
+    disk, pool, tree = build(tmp_path)
+    tree.delete(key(3))  # leaves a hole, so frag_bytes is not zero
+    leaf = tree._leaf_for(key(2))
+    with pool.page(leaf, write=True) as buf:
+        count, free_end, link, frag = node._NODE_HEADER.unpack_from(buf, node.NODE_HEADER_OFFSET)
+        node._NODE_HEADER.pack_into(buf, node.NODE_HEADER_OFFSET, count, free_end, link, frag + 7)
+
+    with pytest.raises(CorruptIndexError, match="N3"):
+        tree.check_invariants()
+    disk.close()
+
+
+# ------------------------------------------------------------------ in-place edits, tree level
+
+
+def logged_bytes(pool: BufferPool, operation: object) -> tuple[int, int]:
+    """Run an operation as a transaction.
+
+    Returns (bytes the commit path would log, pages changed).
+    """
+    pool.begin()
+    operation()  # type: ignore[operator]
+    total, pages = 0, 0
+    for _page_id, before, data in pool.transaction_changes():
+        if before is None:
+            total += len(data)
+            pages += 1
+        else:
+            ranges = changed_ranges(before, data)
+            if ranges:
+                total += delta_size(ranges)
+                pages += 1
+    pool.commit()
+    return total, pages
+
+
+def test_an_insert_that_does_not_split_logs_a_few_hundred_bytes(tmp_path: Path) -> None:
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs", capacity=None, frames=2048)
+    values = list(range(0, 40_000, 2))
+    random.Random(5).shuffle(values)
+    for value in values:
+        tree.insert(key(value), rid(value))
+
+    sizes = []
+    for value in range(1, 4001, 2):  # odd keys: none exist yet, scattered through the tree
+        sizes.append(logged_bytes(pool, lambda v=value: tree.insert(key(v), rid(v))))
+
+    no_split = sorted(size for size, pages in sizes if pages == 1)
+    assert len(no_split) > 0.9 * len(sizes)  # nearly all inserts touch one page
+    assert no_split[len(no_split) // 2] < 400  # a rewrite of the node would be about 1,500
+    assert max(no_split) < 700
+    tree.check_invariants()
+    disk.close()
+
+
+def test_a_delete_logs_a_few_hundred_bytes(tmp_path: Path) -> None:
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs", capacity=None, frames=2048)
+    values = list(range(20_000))
+    random.Random(6).shuffle(values)
+    for value in values:
+        tree.insert(key(value), rid(value))
+
+    sizes = [logged_bytes(pool, lambda v=value: tree.delete(key(v))) for value in values[:3000]]
+
+    assert all(pages == 1 for _size, pages in sizes)
+    ordered = sorted(size for size, _pages in sizes)
+    assert ordered[len(ordered) // 2] < 400
+    assert ordered[-1] < 700
+    tree.check_invariants()
+    disk.close()
+
+
+@pytest.mark.parametrize("capacity", [None, 400, 150])
+def test_many_random_inserts_and_deletes_match_a_dictionary(
+    tmp_path: Path, capacity: int | None
+) -> None:
+    """Long enough to fill leaves, empty them, leave holes and repack, at several node sizes."""
+    disk, pool, tree = new_tree(tmp_path / "db.mvrs", capacity=capacity, frames=512)
+    rng = random.Random(11)
+    model: dict[int, RecordId] = {}
+
+    for step in range(12_000):
+        value = rng.randrange(1500)
+        if value in model and rng.random() < 0.55:
+            assert tree.delete(key(value)) is True
+            del model[value]
+        elif value not in model:
+            tree.insert(key(value), rid(value))
+            model[value] = rid(value)
+        else:
+            assert tree.delete(key(value + 10_000)) is False  # a key that is not there
+        if step % 997 == 0:
+            assert tree.check_invariants() == len(model)
+
+    assert tree.check_invariants() == len(model)
+    assert [k for k, _ in tree.scan()] == [key(v) for v in sorted(model)]
+    assert all(tree.get(key(v)) == r for v, r in model.items())
     disk.close()

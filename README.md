@@ -97,7 +97,7 @@ About 700 tests, taking roughly five minutes. Add `-m "not crash"` to skip the s
 | Unit | Every module alone, including every way a file, page, record or log can be corrupt |
 | Property (Hypothesis) | The B+ tree and the whole engine against a Python dictionary, over random operation sequences |
 | Integration | SQL semantics, constraints, transactions, the planner's choices, the CLI |
-| Crash recovery | A child process is killed with `os._exit` at 18 injected points in two workloads, and during recovery itself; then durability, atomicity and every structural invariant are checked |
+| Crash recovery | A child process is killed with `os._exit` at 19 injected points in two workloads, at 14 more while six threads commit at once, and during recovery itself; then durability, atomicity and every structural invariant are checked |
 | Concurrency | Dirty reads, lost updates, non-repeatable reads, phantoms and deadlocks, with real threads |
 
 `ruff` and `mypy --strict` pass on the engine.

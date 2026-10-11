@@ -17,9 +17,9 @@
       "commits": 3000,
       "log_bytes": 25203064,
       "bytes_per_commit": 8401.021333333334,
-      "seconds": 0.9537247999978717,
-      "commits_per_second": 3145.5614869265164,
-      "recovery_ms": 265.7496999963769,
+      "seconds": 0.5083010000016657,
+      "commits_per_second": 5902.014751082861,
+      "recovery_ms": 288.68079999665497,
       "recovery_deltas_applied": 0
     },
     {
@@ -29,9 +29,9 @@
       "commits": 3000,
       "log_bytes": 1050891,
       "bytes_per_commit": 350.297,
-      "seconds": 1.4715087000004132,
-      "commits_per_second": 2038.723930072012,
-      "recovery_ms": 154.80789999855915,
+      "seconds": 0.46372709999559447,
+      "commits_per_second": 6469.322150955812,
+      "recovery_ms": 133.03630000154953,
       "recovery_deltas_applied": 5773
     },
     {
@@ -41,9 +41,9 @@
       "commits": 60,
       "log_bytes": 3859818,
       "bytes_per_commit": 64330.3,
-      "seconds": 6.86111680000613,
-      "commits_per_second": 8.744932020388633,
-      "recovery_ms": 198.03989999491023,
+      "seconds": 1.870574199994735,
+      "commits_per_second": 32.07571236691326,
+      "recovery_ms": 164.62250000040513,
       "recovery_deltas_applied": 0
     },
     {
@@ -53,9 +53,9 @@
       "commits": 60,
       "log_bytes": 3432808,
       "bytes_per_commit": 57213.46666666667,
-      "seconds": 6.769452599997749,
-      "commits_per_second": 8.86334590776512,
-      "recovery_ms": 211.06549999967683,
+      "seconds": 1.8170439999958035,
+      "commits_per_second": 33.02066433181506,
+      "recovery_ms": 165.2075000019977,
       "recovery_deltas_applied": 120
     },
     {
@@ -65,9 +65,9 @@
       "commits": 1464,
       "log_bytes": 6472512,
       "bytes_per_commit": 4421.11475409836,
-      "seconds": 0.945470300001034,
-      "commits_per_second": 1548.4357361605107,
-      "recovery_ms": 278.02250000240747,
+      "seconds": 0.48075909999897704,
+      "commits_per_second": 3045.1841681272704,
+      "recovery_ms": 200.10289999481756,
       "recovery_deltas_applied": 0
     },
     {
@@ -77,9 +77,9 @@
       "commits": 1464,
       "log_bytes": 461617,
       "bytes_per_commit": 315.31215846994536,
-      "seconds": 0.9135507999963011,
-      "commits_per_second": 1602.538140195299,
-      "recovery_ms": 165.27330000099028,
+      "seconds": 0.3698459000006551,
+      "commits_per_second": 3958.405379098178,
+      "recovery_ms": 120.84100000356557,
       "recovery_deltas_applied": 1474
     },
     {
@@ -89,9 +89,9 @@
       "commits": 1500,
       "log_bytes": 12809412,
       "bytes_per_commit": 8539.608,
-      "seconds": 1.2927006000027177,
-      "commits_per_second": 1160.3614943760733,
-      "recovery_ms": 276.6745999979321,
+      "seconds": 0.4116693000032683,
+      "commits_per_second": 3643.7013884399234,
+      "recovery_ms": 166.7334000012488,
       "recovery_deltas_applied": 0
     },
     {
@@ -99,12 +99,12 @@
       "deltas": true,
       "page_size": 4096,
       "commits": 1500,
-      "log_bytes": 4014671,
-      "bytes_per_commit": 2676.4473333333335,
-      "seconds": 1.2248322000014014,
-      "commits_per_second": 1224.6575490081693,
-      "recovery_ms": 165.2438999954029,
-      "recovery_deltas_applied": 2380
+      "log_bytes": 922184,
+      "bytes_per_commit": 614.7893333333334,
+      "seconds": 0.4074363000036101,
+      "commits_per_second": 3681.5570924503027,
+      "recovery_ms": 111.44500000227708,
+      "recovery_deltas_applied": 3010
     },
     {
       "workload": "3,000 single-row inserts",
@@ -113,9 +113,9 @@
       "commits": 3000,
       "log_bytes": 25203064,
       "bytes_per_commit": 8401.021333333334,
-      "seconds": 0.9600785000002361,
-      "commits_per_second": 3124.7444870385725,
-      "recovery_ms": 243.719099998998,
+      "seconds": 0.49086289999831934,
+      "commits_per_second": 6111.686175529403,
+      "recovery_ms": 266.31900000211317,
       "recovery_deltas_applied": 0
     },
     {
@@ -125,9 +125,9 @@
       "commits": 3000,
       "log_bytes": 1050891,
       "bytes_per_commit": 350.297,
-      "seconds": 1.1196453000011388,
-      "commits_per_second": 2679.419991310595,
-      "recovery_ms": 133.6347999967984,
+      "seconds": 0.481997599999886,
+      "commits_per_second": 6224.097381399221,
+      "recovery_ms": 133.7446999968961,
       "recovery_deltas_applied": 5773
     },
     {
@@ -137,9 +137,9 @@
       "commits": 3000,
       "log_bytes": 98965155,
       "bytes_per_commit": 32988.385,
-      "seconds": 3.6740397999965353,
-      "commits_per_second": 816.5398752628726,
-      "recovery_ms": 430.83959999785293,
+      "seconds": 0.6236942000032286,
+      "commits_per_second": 4810.0495402786655,
+      "recovery_ms": 422.6328000004287,
       "recovery_deltas_applied": 0
     },
     {
@@ -149,9 +149,9 @@
       "commits": 3000,
       "log_bytes": 1081666,
       "bytes_per_commit": 360.55533333333335,
-      "seconds": 2.5717611000000034,
-      "commits_per_second": 1166.5158167296318,
-      "recovery_ms": 143.2827000026009,
+      "seconds": 0.5165283000023919,
+      "commits_per_second": 5808.007034631225,
+      "recovery_ms": 122.42320000223117,
       "recovery_deltas_applied": 5041
     },
     {
@@ -161,9 +161,9 @@
       "commits": 3000,
       "log_bytes": 197284301,
       "bytes_per_commit": 65761.43366666666,
-      "seconds": 4.717169000003196,
-      "commits_per_second": 635.9746704003965,
-      "recovery_ms": 600.6908000053954,
+      "seconds": 0.7833276999954251,
+      "commits_per_second": 3829.8147761371406,
+      "recovery_ms": 654.1708000004292,
       "recovery_deltas_applied": 0
     },
     {
@@ -173,9 +173,9 @@
       "commits": 3000,
       "log_bytes": 1127811,
       "bytes_per_commit": 375.937,
-      "seconds": 4.457173800001328,
-      "commits_per_second": 673.0722504020611,
-      "recovery_ms": 165.23910000250908,
+      "seconds": 0.5937923000019509,
+      "commits_per_second": 5052.271644462455,
+      "recovery_ms": 131.9145999950706,
       "recovery_deltas_applied": 4075
     }
   ],
@@ -183,15 +183,15 @@
     {
       "deltas": false,
       "commits": 150,
-      "median_ms": 23.03070000198204,
-      "commits_per_second": 32.76279689157379,
+      "median_ms": 22.671300001093186,
+      "commits_per_second": 38.9167456392907,
       "bytes_per_commit": 8359.28
     },
     {
       "deltas": true,
       "commits": 150,
-      "median_ms": 22.818899997218978,
-      "commits_per_second": 37.50132098413097,
+      "median_ms": 22.793099997215904,
+      "commits_per_second": 37.70808262730192,
       "bytes_per_commit": 324.8333333333333
     }
   ]

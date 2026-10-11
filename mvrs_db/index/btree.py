@@ -26,6 +26,13 @@ Deletion
     leaves, and the space is reused by later inserts into the same key range.
     PostgreSQL makes the same choice. The cost is that a tree which shrinks a
     lot keeps its height and its pages until the index is rebuilt.
+
+In-place edits
+    An insert or delete that does not split changes the node page in place: one
+    pointer-array shift, one cell, a few header bytes (see btree_node.py). Nodes
+    are decoded into lists only to split them. This is what keeps the log record
+    for an index change small, and the CPU cost per operation independent of how
+    many keys the page holds.
 """
 
 from __future__ import annotations
@@ -79,10 +86,7 @@ class BTree:
                     return page_id
                 if page_type != _INTERNAL:
                     raise CorruptIndexError(f"page {page_id} is not a B+ tree page")
-                if key is None:
-                    page_id = node.decode_internal(buf)[1][0]
-                else:
-                    page_id = node.internal_child(buf, key)
+                page_id = node.leftmost_child(buf) if key is None else node.internal_child(buf, key)
         raise CorruptIndexError("B+ tree is deeper than any valid tree; it contains a cycle")
 
     def get(self, key: bytes) -> RecordId | None:
@@ -145,31 +149,34 @@ class BTree:
         """Insert below `page_id`. Returns (separator, new right page) if it split."""
         if depth > _MAX_HEIGHT:
             raise CorruptIndexError("B+ tree is deeper than any valid tree; it contains a cycle")
+        # Find the way down by binary search, without decoding the node. A
+        # duplicate key is reported here, before anything has been written.
         with self._pool.page(page_id) as buf:
             page_type = page_type_of(buf)
             if page_type == _LEAF:
-                keys, rids, link = node.decode_leaf(buf)
+                found, index = node.locate_leaf(buf, key)
+                if found:
+                    raise DuplicateKeyError("key already exists in the index")
             elif page_type == _INTERNAL:
-                keys, children = node.decode_internal(buf)
+                index, child = node.locate_internal(buf, key)
             else:
                 raise CorruptIndexError(f"page {page_id} is not a B+ tree page")
 
         if page_type == _LEAF:
-            return self._insert_into_leaf(page_id, keys, rids, link, key, rid)
+            return self._insert_into_leaf(page_id, index, key, rid)
 
-        index = bisect_right(keys, key)
-        split = self._insert(children[index], key, rid, depth + 1)
+        split = self._insert(child, key, rid, depth + 1)
         if split is None:
             return None
         separator, new_child = split
+        # The child split. Add its separator to this node, in place if it fits.
+        # `index` is still right: only the child (and its new sibling) changed.
+        with self._pool.page(page_id, write=True) as buf:
+            if node.internal_insert(buf, index, separator, new_child, self._capacity):
+                return None
+            keys, children = node.decode_internal(buf)
         keys.insert(index, separator)
         children.insert(index + 1, new_child)
-        # An internal node needs three keys to split: one moves up, and each half
-        # must keep at least one. (Only a tiny test capacity can overflow sooner.)
-        if node.internal_size(keys) <= self._capacity or len(keys) < 3:
-            with self._pool.page(page_id, write=True) as buf:
-                node.encode_internal(buf, keys, children)
-            return None
 
         # Internal split: the middle key moves up; it is not kept in either half.
         middle = _split_point(keys, node.INTERNAL_CELL_OVERHEAD)
@@ -182,23 +189,15 @@ class BTree:
         return keys[middle], right_id
 
     def _insert_into_leaf(
-        self,
-        page_id: int,
-        keys: list[bytes],
-        rids: list[RecordId],
-        link: int,
-        key: bytes,
-        rid: RecordId,
+        self, page_id: int, index: int, key: bytes, rid: RecordId
     ) -> tuple[bytes, int] | None:
-        index = bisect_left(keys, key)
-        if index < len(keys) and keys[index] == key:
-            raise DuplicateKeyError("key already exists in the index")
+        """Add the entry at cell position `index`: in place if the leaf has room, else split."""
+        with self._pool.page(page_id, write=True) as buf:
+            if node.leaf_insert(buf, index, key, rid, self._capacity):
+                return None
+            keys, rids, link = node.decode_leaf(buf)
         keys.insert(index, key)
         rids.insert(index, rid)
-        if node.leaf_size(keys) <= self._capacity or len(keys) < 2:
-            with self._pool.page(page_id, write=True) as buf:
-                node.encode_leaf(buf, keys, rids, link)
-            return None
 
         # Leaf split: the separator is a copy of the right half's first key.
         if link == 0 and index == len(keys) - 1:
@@ -233,14 +232,11 @@ class BTree:
         """Remove a key. Returns False if it was not present."""
         page_id = self._leaf_for(key)
         with self._pool.page(page_id) as buf:
-            keys, rids, link = node.decode_leaf(buf)
-        index = bisect_left(keys, key)
-        if index == len(keys) or keys[index] != key:
+            found, index = node.locate_leaf(buf, key)
+        if not found:
             return False
-        del keys[index]
-        del rids[index]
         with self._pool.page(page_id, write=True) as buf:
-            node.encode_leaf(buf, keys, rids, link)
+            node.leaf_delete(buf, index)
         return True
 
     # ------------------------------------------------------------------ inspection
@@ -258,7 +254,7 @@ class BTree:
                 if page_type_of(buf) == _LEAF:
                     keys = node.decode_leaf(buf)[0]
                     break
-                page_id = node.decode_internal(buf)[1][-1]
+                page_id = node.rightmost_child(buf)
         else:
             raise CorruptIndexError("B+ tree is deeper than any valid tree; it contains a cycle")
         if keys:
@@ -276,7 +272,7 @@ class BTree:
             with self._pool.page(page_id) as buf:
                 if page_type_of(buf) == _LEAF:
                     return levels
-                page_id = node.decode_internal(buf)[1][0]
+                page_id = node.leftmost_child(buf)
             levels += 1
         raise CorruptIndexError("B+ tree is deeper than any valid tree; it contains a cycle")
 
@@ -325,9 +321,11 @@ class BTree:
             with self._pool.page(page_id) as buf:
                 page_type = page_type_of(buf)
                 if page_type == _LEAF:
+                    node.validate(buf, leaf=True)
                     keys, _rids, _link = node.decode_leaf(buf)
                     children: list[int] = []
                 elif page_type == _INTERNAL:
+                    node.validate(buf, leaf=False)
                     keys, children = node.decode_internal(buf)
                 else:
                     raise CorruptIndexError(f"T5: page {page_id} is not a B+ tree page")
