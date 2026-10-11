@@ -24,7 +24,7 @@ from mvrs_db.errors import (
 )
 from mvrs_db.storage import heap_page
 from mvrs_db.storage.buffer_pool import BufferPool
-from mvrs_db.storage.page import PageType, page_type_of
+from mvrs_db.storage.page import PageType, page_lsn, page_type_of
 
 _SIZE_CLASSES = 17  # free space is below 2**16, so class indexes run 0..16
 
@@ -234,6 +234,22 @@ class HeapFile:
             with self._pool.page(page_id) as buf:
                 rows += heap_page.live_count(buf)
         return rows, len(pages)
+
+    def stamp(self) -> tuple[int, int, int]:
+        """(newest page LSN, live records, pages): changes whenever the heap changes.
+
+        Every committed change sets the LSN of the page it touches to a value
+        above any earlier one, so the newest LSN moves on with every change. A
+        saved copy of data derived from this heap (the vector index) records the
+        stamp and is valid only while the stamp is unchanged.
+        """
+        newest = rows = 0
+        pages = self.pages()
+        for page_id in pages:
+            with self._pool.page(page_id) as buf:
+                newest = max(newest, page_lsn(buf))
+                rows += heap_page.live_count(buf)
+        return newest, rows, len(pages)
 
     def validate(self) -> None:
         """Check the page-level invariants of every page in the chain."""

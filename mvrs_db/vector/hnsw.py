@@ -49,7 +49,7 @@ from __future__ import annotations
 import heapq
 import math
 import random
-from collections.abc import Hashable, Sequence
+from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -100,6 +100,122 @@ class HnswIndex:
         self._entry = -1
         self._top_layer = -1
         self.distance_computations = 0
+        # True when the index differs from its saved snapshot (or has none).
+        self.dirty = True
+
+    # ------------------------------------------------------------------ snapshots
+
+    def to_arrays(self) -> dict[str, Any]:
+        """The whole index as flat arrays, for saving (see vector/snapshot.py).
+
+        Payloads must be (page, slot) pairs. Dead nodes are kept, with their
+        flag, because they still route searches.
+        """
+        count = self._count
+        links = self._links
+        return {
+            "vectors": _np.ascontiguousarray(self._vectors[:count], dtype="<f4"),
+            "pages": _np.fromiter((p[0] for p in self._payloads), dtype="<u4", count=count),  # type: ignore[index]
+            "slots": _np.fromiter((p[1] for p in self._payloads), dtype="<u2", count=count),  # type: ignore[index]
+            "dead": _np.frombuffer(bytes(self._dead), dtype="u1"),
+            "node_layers": _np.fromiter((len(node) for node in links), dtype="u1", count=count),
+            "degrees": _np.fromiter((len(layer) for node in links for layer in node), dtype="<u2"),
+            "neighbors": _np.fromiter(
+                (n for node in links for layer in node for n in layer), dtype="<u4"
+            ),
+            "entry": self._entry,
+            "top_layer": self._top_layer,
+            "m": self.m,
+            "ef_construction": self.ef_construction,
+        }
+
+    @classmethod
+    def from_arrays(
+        cls,
+        dimension: int,
+        metric: str,
+        arrays: dict[str, Any],
+        payload: Callable[[int, int], Hashable] = lambda page, slot: (page, slot),
+    ) -> HnswIndex:
+        """Rebuild an index from to_arrays() output.
+
+        The arrays come from a file, so nothing in them is trusted: every size,
+        node number and layer is checked, and anything inconsistent raises
+        ValueError. A search over an unchecked graph could index out of range or
+        loop; a checked one cannot.
+        """
+        if not 2 <= int(arrays["m"]) <= 256 or not 1 <= int(arrays["ef_construction"]) <= 65535:
+            raise ValueError("the index parameters are out of range")
+        vectors = arrays["vectors"]
+        if vectors.ndim != 2 or vectors.shape[1] != dimension:
+            raise ValueError("vector array has the wrong shape")
+        count = int(vectors.shape[0])
+        node_layers, degrees = arrays["node_layers"], arrays["degrees"]
+        neighbors = arrays["neighbors"]
+        for name in ("pages", "slots", "dead", "node_layers"):
+            if len(arrays[name]) != count:
+                raise ValueError(f"{name} has {len(arrays[name])} entries for {count} nodes")
+        if count and not bool(_np.isfinite(vectors).all()):
+            raise ValueError("a stored vector is not finite")
+        if count and int(node_layers.min()) < 1:
+            raise ValueError("a node has no layers")
+        if int(node_layers.sum(dtype="u8")) != len(degrees):
+            raise ValueError("layer counts do not match the degree list")
+        if int(degrees.sum(dtype="u8")) != len(neighbors):
+            raise ValueError("degrees do not match the neighbour list")
+        if len(neighbors) and int(neighbors.max()) >= count:
+            raise ValueError("a link points at a node that does not exist")
+        if count and int(arrays["dead"].max()) > 1:
+            raise ValueError("a dead flag is neither 0 nor 1")
+        entry, top_layer = int(arrays["entry"]), int(arrays["top_layer"])
+        if count == 0:
+            if entry != -1 or top_layer != -1:
+                raise ValueError("an empty index has an entry point")
+        else:
+            if not 0 <= entry < count:
+                raise ValueError("the entry point is not a node")
+            if int(node_layers[entry]) - 1 != top_layer:
+                raise ValueError("the entry point is not on the top layer")
+            if int(node_layers.max()) - 1 != top_layer:
+                raise ValueError("a node sits above the top layer")
+
+        index = cls(
+            dimension, metric, m=int(arrays["m"]), ef_construction=int(arrays["ef_construction"])
+        )
+        layer_counts = node_layers.tolist()
+        degree_list, neighbor_list = degrees.tolist(), neighbors.tolist()
+        links: list[list[list[int]]] = []
+        d = n = 0
+        for layers in layer_counts:
+            node_links: list[list[int]] = []
+            for layer in range(layers):
+                chunk = neighbor_list[n : n + degree_list[d]]
+                d += 1
+                n += len(chunk)
+                for other in chunk:
+                    if layer_counts[other] <= layer:
+                        raise ValueError("a link goes to a layer its target is not on")
+                node_links.append(chunk)
+            links.append(node_links)
+
+        capacity = max(1024, count)
+        index._vectors = _np.empty((capacity, dimension), dtype=_np.float32)
+        index._vectors[:count] = vectors
+        index._count = count
+        index._links = links
+        index._payloads = [
+            payload(int(p), int(s))
+            for p, s in zip(arrays["pages"].tolist(), arrays["slots"].tolist(), strict=True)
+        ]
+        index._dead = bytearray(arrays["dead"].tobytes())
+        index._node_of = {
+            index._payloads[node]: node for node in range(count) if not index._dead[node]
+        }
+        index._entry, index._top_layer = entry, top_layer
+        # Inserts after a load draw their layers from a fresh stream.
+        index._random = random.Random(count)
+        index.dirty = False
+        return index
 
     # ------------------------------------------------------------------ size
 
@@ -224,6 +340,7 @@ class HnswIndex:
 
         if self._entry < 0:
             self._entry, self._top_layer = node, level
+            self.dirty = True
             return True
 
         nearest = [(self._distances(target, [self._entry])[0], self._entry)]
@@ -248,6 +365,7 @@ class HnswIndex:
             nearest = found
         if level > self._top_layer:
             self._entry, self._top_layer = node, level
+        self.dirty = True
         return True
 
     def remove(self, payload: Hashable) -> bool:
@@ -256,6 +374,7 @@ class HnswIndex:
         if node is None:
             return False
         self._dead[node] = 1
+        self.dirty = True
         return True
 
     # ------------------------------------------------------------------ searching

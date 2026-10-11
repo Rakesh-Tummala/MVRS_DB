@@ -350,6 +350,11 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 * **Reason:** Found by profiling after in-place B+ tree edits (D-064) removed the larger cost. `changed_ranges` was 52% of an insert on 32 KiB pages and 16% on 4 KiB pages, because it looped over every block of every changed page. Skipping unchanged chunks with one comparison each made it 4.9 times cheaper on 32 KiB pages (0.451 s to 0.093 s for 1,200 inserts) with identical output, checked against the original at all four page sizes with edits placed on the chunk edges. It is not free of page-size dependence: it still makes one comparison per chunk.
 * **Date:** 2026-10-12
 
+## D-068 — The vector index is saved as a validated cache file, not stored in pages
+* **Alternatives:** Store the graph in database pages and log it like the B+ tree (never rebuilt, but a large piece of work and every insert would write graph pages); keep rebuilding on every open (the previous behaviour: 25 s for 10,000 vectors).
+* **Reason:** The table is the truth and the index is derivable, so a cache that is checked before use gives most of the benefit with no new recovery logic. Validity is a stamp of the heap (newest page LSN, row count, page count) plus the table identity; the file also has a checksum and the graph is structurally validated on load, so a damaged or foreign file is ignored, never trusted. The file is renamed into place for atomicity, and saved on close only, so a crash costs a rebuild and not correctness. Measured once: 25.5 s to rebuild, 0.12 s to load (10,000 rows, 64 dimensions). Drop and create of a table delete its copy; if that transaction rolls back the copy is simply lost.
+* **Date:** 2026-10-12
+
 ## D-019 — Optional dependencies only
 * **Alternatives:** Make `typer` a hard dependency.
 * **Reason:** The engine installs with no third-party packages. `typer`, test tools, `matplotlib` and `numpy` are extras.

@@ -37,7 +37,7 @@ Run the tests with:
 | 13 | Transactions and locks | `10-transactions.md` | `database.py`, `transactions/lock_manager.py` | `test_transactions.py`, `concurrency/` |
 | 14 | Aggregates | `12-aggregates-and-joins.md` | `HashAggregate`, `MetadataAggregate` in `execution/operators.py`; `_plan_aggregate` in `planner/planner.py` | `integration/test_aggregates.py` |
 | 15 | Joins | `12-aggregates-and-joins.md` | `planner/scope.py`; `_plan_join` in `planner/planner.py`; `HashJoin`, `IndexJoin` in `execution/operators.py` | `integration/test_joins.py` |
-| 16 | Vector search | `11-vector-search.md` | `vector/distance.py`, `vector/hnsw.py`; `VectorTopK`, `VectorIndexScan` in `execution/operators.py` | `integration/test_vectors.py`, `test_vector_search.py`, `test_vector_index.py` |
+| 16 | Vector search | `11-vector-search.md` | `vector/distance.py`, `vector/hnsw.py`, `vector/snapshot.py`, `catalog/ann_store.py`; `VectorTopK`, `VectorIndexScan` in `execution/operators.py` | `integration/test_vectors.py`, `test_vector_search.py`, `test_vector_index.py`, `test_vector_snapshot.py` |
 | 19 | In-place B+ tree edits | `09-btree.md` (sections "Operations" and "Why in place") | `index/btree_node.py` (`leaf_insert`, `leaf_delete`, `internal_insert`, `validate`); `_insert` in `index/btree.py` | `unit/test_btree_node.py`, `unit/test_btree.py`, `benchmarks/btree_ops.py` |
 | 18 | Group commit | `05-wal-and-recovery.md` (sections "Commit, step by step", "Write ordering") | `recovery/wal.py` (`flush_through`, `atomic_append`); `_finish`, `_log_and_commit`, `_make_log_durable` in `database.py`; `commit(durable_after)` in `storage/buffer_pool.py` | `concurrency/test_group_commit.py`, `crash_recovery/test_crash_concurrent.py`, `benchmarks/group_commit.py` |
 | 17 | Delta log records | `05-wal-and-recovery.md` (section "Log whole pages, or the bytes that changed") | `recovery/delta.py`; `_log_and_commit` in `database.py`; `_rebuild` in `recovery/recovery_manager.py` | `unit/test_delta.py`, `crash_recovery/`, `benchmarks/log_volume.py` |
@@ -102,6 +102,13 @@ Topics 14 to 19 were added after the first thirteen. Each of their design docs e
 * Throughput went up 7.4 times at 16 threads. What got worse?
 * The first test written for the page-write rule passed even with the rule removed. Why, and what makes the replacement different?
 
+### Vector index snapshot
+* Why is a saved copy of the index safe without logging it?
+* What is the stamp, why does the newest page LSN change on every committed write, and what stale case does it catch?
+* A checksum already detects damage. Why does `from_arrays` still validate the graph?
+* Why write to a temporary file and rename it?
+* When is the saved copy lost, and what does the user pay then?
+
 ### SQL and execution
 * What does a lexer do that a parser does not?
 * How does recursive descent encode operator precedence?
@@ -131,6 +138,8 @@ Topics 14 to 19 were added after the first thirteen. Each of their design docs e
 * If you had another month, what would you build first, and why?
 
 ## Good experiments
+
+* Make `AnnStore.load` skip the stamp comparison and run `test_vector_snapshot.py`; two tests fail, which shows what the stamp is for.
 
 * Remove the `set_page_lsn` call in `Database._log_and_commit` and see which recovery tests fail, and why.
 * Make `BufferPool._make_room` ignore the transaction's write set. Which test catches it?

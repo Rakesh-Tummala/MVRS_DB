@@ -44,6 +44,7 @@ from pathlib import Path
 from types import TracebackType
 
 from mvrs_db import config, faults
+from mvrs_db.catalog.ann_store import AnnStore
 from mvrs_db.catalog.catalog import Catalog
 from mvrs_db.errors import (
     CorruptFileError,
@@ -160,7 +161,7 @@ class Database:
         # The WAL rule: before any page reaches the data file, the log records
         # describing it must be durable. wal.sync is a no-op when they already are.
         self._pool = BufferPool(disk, buffer_pages, before_page_write=self._make_log_durable)
-        self._catalog = Catalog(self._pool)
+        self._catalog = Catalog(self._pool, AnnStore(path, disk.header.db_id))
         self._executor = Executor(self._catalog)
         self._locks = LockManager(lock_timeout)
         self._synchronous = synchronous
@@ -272,6 +273,7 @@ class Database:
                 connection._abandon()
             if self._failed is None:
                 self._checkpoint()
+                self._save_vector_indexes_quietly()
         finally:
             self._closed = True
             self._wal.close()
@@ -279,6 +281,24 @@ class Database:
                 self._disk.close()
             finally:
                 self._file_lock.release()
+
+    def save_vector_indexes(self) -> int:
+        """Save every changed vector index, so the next open need not rebuild it.
+
+        Returns how many were written. Close does this automatically; calling it
+        earlier protects against a crash, which would otherwise lose the saved
+        copy (the next open then rebuilds from the table, which is always correct).
+        """
+        self._require_open()
+        if self._pool.in_transaction:
+            return 0
+        return self._catalog.save_vector_indexes()
+
+    def _save_vector_indexes_quietly(self) -> None:
+        # The snapshot is a cache. Failing to write it (disk full, read-only
+        # directory) must not stop the database from closing.
+        with contextlib.suppress(OSError):
+            self._catalog.save_vector_indexes()
 
     def __enter__(self) -> Database:
         return self

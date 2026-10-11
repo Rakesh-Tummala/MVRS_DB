@@ -15,6 +15,7 @@ import threading
 from dataclasses import dataclass, field, replace
 
 from mvrs_db import config
+from mvrs_db.catalog.ann_store import AnnStore
 from mvrs_db.catalog.schema import Column, TableSchema
 from mvrs_db.errors import (
     CatalogError,
@@ -54,6 +55,8 @@ class Table:
     # True while the running transaction has changed a built index. Such an
     # index cannot survive a rollback, because it describes rows that are gone.
     _ann_changed: bool = False
+    # Where saved copies of the indexes live; None for tables with no store.
+    _store: AnnStore | None = field(default=None, repr=False)
 
     def ann_index(self, position: int) -> HnswIndex:
         """The HNSW index on a vector column, building it from the table if needed.
@@ -66,6 +69,14 @@ class Table:
             index = self._ann.get(position)
             if index is None or index.dead_fraction > MAX_DEAD_FRACTION:
                 column = self.schema.columns[position]
+                index = None
+                # A saved copy is usable only between transactions: inside one
+                # the heap may differ from what the copy was saved from.
+                if self._store is not None and not self.heap.pool.in_transaction:
+                    index = self._store.load(self.schema, self.heap, position)
+                if index is not None and index.dead_fraction <= MAX_DEAD_FRACTION:
+                    self._ann[position] = index
+                    return index
                 index = HnswIndex(column.dimension, column.ann)
                 types = self.schema.column_types
                 for rid, record in self.heap.scan():
@@ -82,6 +93,28 @@ class Table:
 
     def ann_built(self, position: int) -> bool:
         return position in self._ann
+
+    def ann_saved(self, position: int) -> bool:
+        """True if a usable saved copy of the index exists (nothing is loaded)."""
+        if self._store is None or self.heap.pool.in_transaction:
+            return False
+        return self._store.path(self.schema.table_id, position).exists()
+
+    def save_vector_indexes(self) -> int:
+        """Write every built index that changed since it was saved. Returns how many.
+
+        Call only between transactions, so the heap holds exactly the committed
+        rows the in-memory index describes.
+        """
+        if self._store is None:
+            return 0
+        saved = 0
+        with self._ann_lock:
+            for position, index in self._ann.items():
+                if index.dirty and not self._ann_changed:
+                    self._store.save(self.schema, self.heap, position, index)
+                    saved += 1
+        return saved
 
     def vector_row_added(self, rid: RecordId, row: tuple[Value, ...]) -> None:
         """Keep built vector indexes in step with an inserted row."""
@@ -110,8 +143,9 @@ class Table:
 
 
 class Catalog:
-    def __init__(self, pool: BufferPool) -> None:
+    def __init__(self, pool: BufferPool, store: AnnStore | None = None) -> None:
         self._pool = pool
+        self._store = store
         self._lock = threading.RLock()
         self._tables: dict[str, Table] = {}
         self._heap: HeapFile | None = None
@@ -150,6 +184,10 @@ class Catalog:
             self._tables = tables
             self._next_table_id = next_id
 
+    def save_vector_indexes(self) -> int:
+        with self._lock:
+            return sum(table.save_vector_indexes() for table in self._tables.values())
+
     def transaction_committed(self) -> None:
         """The changes made to in-memory vector indexes are now permanent."""
         with self._lock:
@@ -162,7 +200,13 @@ class Catalog:
             for position, column in enumerate(schema.columns)
             if column.index_root
         }
-        return Table(schema, HeapFile(self._pool, schema.first_heap_page), indexes, rid)
+        return Table(
+            schema,
+            HeapFile(self._pool, schema.first_heap_page),
+            indexes,
+            rid,
+            _store=self._store,
+        )
 
     # ------------------------------------------------------------------ lookup
 
@@ -263,6 +307,8 @@ class Catalog:
             rid = self.heap.insert(schema.encode())
             table = self._open_table(schema, rid)
             table.row_count = 0
+            if self._store is not None:
+                self._store.discard(schema.table_id)
             self._tables[schema.name] = table
             self._next_table_id += 1
             return table
@@ -276,3 +322,5 @@ class Catalog:
             table.heap.drop()
             self.heap.delete(table.catalog_rid)
             del self._tables[name]
+            if self._store is not None:
+                self._store.discard(table.schema.table_id)

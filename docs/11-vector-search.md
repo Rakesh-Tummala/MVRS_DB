@@ -176,23 +176,28 @@ Reading the table:
 
 The search is greedy: it only explores outward from the best candidates it has found. If a query falls between two clusters, the search can settle in one of them, fill its candidate list there, and never visit the other, even though some true neighbours are in it. Raising `ef_search` widens the candidate list until the other cluster is reached. With `ef_search` equal to the number of rows the search is exhaustive and exact, which the tests use to confirm the graph is fully connected.
 
-### In memory only
+### In memory, with a saved copy
 
-The index is never written to disk. This was a deliberate cut.
+The index lives in memory and is not logged. It is saved to a separate file as a cache.
 
-* **It is rebuilt on first use** after the database is opened: the first approximate query reads the whole table and inserts every vector, at about 2 to 3 ms per row. For 10,000 rows that is 20 to 30 seconds, paid by that one query. `EXPLAIN` shows `index not built yet` beforehand.
+* **A saved copy is written on close** (and by `db.save_vector_indexes()`), to `<database>.ann.<table id>.<column>`. It is a flat dump of the graph (`vector/snapshot.py` has the byte layout), written to a temporary file and renamed into place, so a crash leaves the old copy or the new one.
+* **It is used only if it is provably current.** It records which database file, table, column, dimension and metric it was built from, plus a *stamp* of the table's heap: the newest page LSN, the live row count and the page count (`HeapFile.stamp`). Every committed change gives a page a higher LSN, so any change since saving makes the stamp differ and the copy is ignored. A checksum catches damaged files, and `HnswIndex.from_arrays` checks the graph itself (links in range, layers consistent, entry point valid), so a corrupt or hostile file cannot make a search crash or loop.
+* **Any doubt means rebuilding from the table**, which is always correct. A crash before close just loses the copy. Nothing about the copy is trusted for correctness, which is why it needs no logging or recovery.
+* **Without a usable copy it is rebuilt on first use**: the first approximate query reads the whole table and inserts every vector, at about 2 to 3 ms per row. `EXPLAIN` shows `index not built yet`, or `index not in memory yet (saved copy on disk)` when a file exists (it is only checked for validity when the query runs).
+* **Measured once** (10,000 rows, 64 dimensions, 3.5 MB snapshot, synchronous off, one run each): the first approximate query took 25.5 s when rebuilding and 0.12 s when loading the copy. Loading is dominated by turning the arrays back into Python lists.
+* **A copy goes stale when the table changes while the index is not loaded.** For example, rows are deleted in a session that never ran an approximate query. That is detected by the stamp, not prevented. The next open rebuilds.
 * **Inserts get slower once it is built**, because each new row is also inserted into the graph.
 * **A rollback discards it** if the rolled-back transaction changed it, since it would describe rows that no longer exist. It is then rebuilt on next use. An index the transaction did not touch is kept.
 * **Deletes mark graph nodes dead.** Dead nodes still route searches but are never returned. When more than 30% of an index is dead it is rebuilt.
 * **It needs no logging or recovery**, which is the point: a crash cannot corrupt something that is rebuilt from the table.
 
-A persistent index would store the graph in pages and log changes to it like the B+ tree. That is a much larger piece of work and is not done.
+An index stored in pages and logged like the B+ tree would never need rebuilding and could grow past memory. That is a much larger piece of work and is not done; the saved copy still has to fit in memory when loaded.
 
 ## Cost and limits
 
 * **Exact means linear.** Every candidate row is measured, so time grows with rows × dimensions.
 * **Approximate means approximate.** The index can miss true neighbours, and how many depends on the data and on `ef_search`. Use `db.vector.use_index = False` when the exact answer matters.
-* **The index is rebuilt after every open**, on the first query that uses it.
+* **The index is rebuilt after an open if the saved copy is missing or out of date**, on the first query that uses it.
 * **A filtered search is always exact.** Any `WHERE` clause bypasses the index and also the fast exact path.
 * **A vector must fit in one record.** 768 dimensions fits the default 4 KiB page; 1,536 needs `page_size=8192`.
 * **Each vector is 4 bytes per dimension**, uncompressed, plus the index's own copy in memory once built.

@@ -430,7 +430,12 @@ class VectorIndexScan(Operator):
             yield rid, decode_record(types, heap.read(rid))
 
     def describe(self) -> str:
-        built = "" if self.table.ann_built(self.spec.position) else ", index not built yet"
+        if self.table.ann_built(self.spec.position):
+            built = ""
+        elif self.table.ann_saved(self.spec.position):
+            built = ", index not in memory yet (saved copy on disk)"
+        else:
+            built = ", index not built yet"
         return (
             f"VectorIndexScan({self.limit} nearest by {self.spec.describe()}; "
             f"HNSW, approximate, ef={self.ef}{built})"

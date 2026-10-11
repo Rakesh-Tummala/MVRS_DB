@@ -23,6 +23,7 @@ examples/mvrs_db-demo-*/
 *.mvrs
 *.mvrs.wal
 *.wal
+*.mvrs.ann.*
 
 # Editors and OS
 .vscode/
