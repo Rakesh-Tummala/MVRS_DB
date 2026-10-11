@@ -6,7 +6,7 @@ What MVRS_DB does not do, stated plainly. Each item is a real difference from a 
 
 | Area | Missing | Notes |
 |---|---|---|
-| SQL | Joins, aggregates (`COUNT`, `SUM`, ...), `GROUP BY`, subqueries, `DISTINCT`, `OFFSET`, `LIKE`, `IN`, `BETWEEN`, arithmetic, aliases, views, triggers, foreign keys, `ALTER TABLE`, `CREATE INDEX` | Each is rejected with an error that names it. Inner joins were a stretch goal and were not attempted. |
+| SQL | Joins, `HAVING`, subqueries, `DISTINCT`, `OFFSET`, `LIKE`, `IN`, `BETWEEN`, arithmetic, aliases, views, triggers, foreign keys, `ALTER TABLE`, `CREATE INDEX` | Each is rejected with an error that names it. Aggregates and `GROUP BY` are supported, on plain columns only: no `SUM(price * qty)`. |
 | Types | Booleans, dates, blobs, decimals | Three types only: `INTEGER`, `REAL`, `TEXT`. |
 | Indexes | Composite keys, non-unique secondary indexes | Only the primary key and `UNIQUE` columns are indexed. |
 | Concurrency | Concurrent writers, row-level locks, MVCC, savepoints | One writer at a time; locks are per table. |
@@ -24,7 +24,8 @@ What MVRS_DB does not do, stated plainly. Each item is a real difference from a 
 * **Text ordering is by Unicode code point.** `'Z' < 'a'`, and accented letters sort after all unaccented ones.
 * **An index key is at most 255 bytes**, so a `TEXT` primary key or unique value longer than that is rejected.
 * **`SELECT` without `ORDER BY` returns rows in storage order**, which changes as rows are updated and deleted.
-* **Keywords are reserved.** A column cannot be called `index`, `count`, `date`, `key`, and so on.
+* **Keywords are reserved.** A column cannot be called `index`, `count`, `sum`, `min`, `max`, `group`, `vector`, `date`, `key`, and so on.
+* **A grouped query keeps every group in memory.** There is no spilling to disk.
 * **Only one process can open a database**, and only once.
 
 ## Durability caveats
@@ -46,7 +47,7 @@ The optimiser assumes values are spread evenly between the smallest and largest 
 1. **Delta log records.** The biggest single win for write throughput and log size.
 2. **Group commit.** One `fsync` for several waiting transactions.
 3. **Prepared statements with parameters.** Removes parsing from the hot path and removes the need to build SQL strings.
-4. **Aggregates and inner joins.** The operator model already supports adding them.
+4. **Inner joins.** Aggregates are done; joins are the next gap in the SQL support.
 5. **Non-unique secondary indexes**, by appending the record ID to the key.
 6. **ARIES-style logging** (steal, undo, compensation records), which is what unlocks concurrent writers and transactions larger than memory.
 7. **MVCC** on top of that, so readers never block.

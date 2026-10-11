@@ -35,6 +35,7 @@ _TYPE_NAMES = {
 }
 _COMPARISONS = {"=": "=", "!=": "!=", "<>": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">="}
 _MAX_NESTING = 200
+_AGGREGATES = frozenset({"COUNT", "SUM", "AVG", "MIN", "MAX"})
 
 
 def parse(text: str) -> ast.Statement:
@@ -226,17 +227,23 @@ class _Parser:
 
     def _select(self) -> ast.Select:
         self._expect_keyword("SELECT")
-        columns: tuple[str | ast.Distance, ...] | None
+        columns: tuple[ast.SelectItem, ...] | None
         if self._accept_symbol("*"):
             columns = None
         else:
-            items = [self._column_or_distance("column name or *")]
+            items = [self._select_item("column name or *")]
             while self._accept_symbol(","):
-                items.append(self._column_or_distance("column name"))
+                items.append(self._select_item("column name"))
             columns = tuple(items)
         self._expect_keyword("FROM")
         table = self._identifier("table name")
         where = self._where()
+        group_by: list[str] = []
+        if self._accept_keyword("GROUP"):
+            self._expect_keyword("BY")
+            group_by.append(self._identifier("column name"))
+            while self._accept_symbol(","):
+                group_by.append(self._identifier("column name"))
         order_by: list[ast.OrderItem] = []
         if self._accept_keyword("ORDER"):
             self._expect_keyword("BY")
@@ -252,7 +259,26 @@ class _Parser:
             limit = int(token.value)
             if limit > _INT64_MAX:
                 raise SqlSyntaxError("LIMIT is too large")
-        return ast.Select(table, columns, where, tuple(order_by), limit)
+        return ast.Select(table, columns, where, tuple(order_by), limit, tuple(group_by))
+
+    def _select_item(self, what: str) -> ast.SelectItem:
+        """A column, a vector distance, or an aggregate such as COUNT(*) or SUM(price)."""
+        token = self._current
+        if token.kind is not TokenKind.KEYWORD or token.value not in _AGGREGATES:
+            return self._column_or_distance(what)
+        self._index += 1
+        self._expect_symbol("(")
+        if self._accept_symbol("*"):
+            if token.value != "COUNT":
+                where = describe_position(self._text, token.position)
+                raise SqlSyntaxError(
+                    f"{token.value}(*) is not valid; only COUNT can take *, at {where}"
+                )
+            column = None
+        else:
+            column = self._identifier("a column name or *")
+        self._expect_symbol(")")
+        return ast.Aggregate(token.value, column)
 
     def _column_or_distance(self, what: str) -> str | ast.Distance:
         """A column name, optionally followed by `<-> [vector]` or `<=> [vector]`."""
@@ -265,7 +291,7 @@ class _Parser:
         return ast.Distance(column, operator, self._vector())
 
     def _order_item(self) -> ast.OrderItem:
-        column = self._column_or_distance("column name")
+        column = self._select_item("column name")
         if self._accept_keyword("DESC"):
             return ast.OrderItem(column, True)
         self._accept_keyword("ASC")

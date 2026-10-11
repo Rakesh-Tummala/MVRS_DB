@@ -99,18 +99,35 @@ class Distance:
 
 
 @dataclass(frozen=True, slots=True)
+class Aggregate:
+    """COUNT(*), COUNT(column), SUM(column), AVG(column), MIN(column) or MAX(column)."""
+
+    function: str  # COUNT, SUM, AVG, MIN or MAX
+    column: str | None  # None only for COUNT(*)
+
+    @property
+    def label(self) -> str:
+        """The text used as the result column's name, such as "sum(price)"."""
+        return f"{self.function.lower()}({self.column or '*'})"
+
+
+SelectItem = str | Distance | Aggregate
+
+
+@dataclass(frozen=True, slots=True)
 class OrderItem:
-    column: str | Distance
+    column: SelectItem
     descending: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class Select:
     table: str
-    columns: tuple[str | Distance, ...] | None  # None: SELECT *
+    columns: tuple[SelectItem, ...] | None  # None: SELECT *
     where: Expr | None = None
     order_by: tuple[OrderItem, ...] = ()
     limit: int | None = None
+    group_by: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

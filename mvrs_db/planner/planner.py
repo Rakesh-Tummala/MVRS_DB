@@ -31,11 +31,14 @@ from mvrs_db.catalog.catalog import Table
 from mvrs_db.errors import SqlError, TypeMismatchError
 from mvrs_db.execution import expressions
 from mvrs_db.execution.operators import (
+    AggregateSpec,
     DistanceSpec,
     Filter,
+    HashAggregate,
     IndexScan,
     KeyRange,
     Limit,
+    MetadataAggregate,
     Operator,
     Project,
     SeqScan,
@@ -218,6 +221,13 @@ def plan_select(
 ) -> tuple[Operator, tuple[str, ...]]:
     """Build the operator tree for a SELECT and return it with its output column names."""
     schema = table.schema
+    selected = statement.columns or ()
+    if statement.group_by or any(
+        isinstance(item, ast.Aggregate)
+        for item in (*selected, *(order.column for order in statement.order_by))
+    ):
+        return _plan_aggregate(table, statement)
+
     names: tuple[str, ...]
     items: list[int | DistanceSpec]
     if statement.columns is None:
@@ -225,13 +235,13 @@ def plan_select(
         items = list(range(len(names)))
     else:
         names = tuple(
-            "distance" if isinstance(column, ast.Distance) else column
+            "distance" if isinstance(column, ast.Distance) else str(column)
             for column in statement.columns
         )
         items = [
             distance_spec(table, column)
             if isinstance(column, ast.Distance)
-            else expressions.column_position(schema, column)
+            else expressions.column_position(schema, str(column))
             for column in statement.columns
         ]
 
@@ -272,6 +282,130 @@ def plan_select(
 
     child = plan
     plan = Project(child, items, names)
+    plan.est_rows, plan.cost = child.est_rows, child.cost
+    return plan, names
+
+
+def _aggregate_spec(table: Table, node: ast.Aggregate) -> AggregateSpec:
+    """Check an aggregate against the table: the column exists and has a usable type."""
+    schema = table.schema
+    if node.column is None:
+        return AggregateSpec(node.function, None, node.label)
+    position = expressions.column_position(schema, node.column)
+    column_type = schema.columns[position].type
+    if node.function in ("SUM", "AVG") and column_type not in (
+        ColumnType.INTEGER,
+        ColumnType.REAL,
+    ):
+        raise TypeMismatchError(
+            f"{node.function} needs a numeric column, but {schema.name}.{node.column} "
+            f"is {column_type.name}"
+        )
+    if node.function in ("MIN", "MAX") and column_type is ColumnType.VECTOR:
+        raise TypeMismatchError(f"{node.function} cannot be applied to a vector column")
+    return AggregateSpec(node.function, position, node.label)
+
+
+def _plan_aggregate(table: Table, statement: ast.Select) -> tuple[Operator, tuple[str, ...]]:
+    """A SELECT with GROUP BY or aggregate functions.
+
+    The aggregate operator turns the table's rows into rows shaped
+    (group columns..., aggregate results...). ORDER BY and LIMIT then apply to
+    those rows, and a final projection puts the columns in the order asked for.
+
+    The rule SQL enforces, and this function checks: every selected column must
+    either be listed in GROUP BY or be inside an aggregate. Otherwise a group of
+    many rows would have to yield one value for that column, and there is no
+    right way to pick it.
+    """
+    schema = table.schema
+    if statement.columns is None:
+        raise SqlError(
+            "SELECT * cannot be used with GROUP BY or aggregate functions; name the columns"
+        )
+
+    group_positions: list[int] = []
+    for name in statement.group_by:
+        position = expressions.column_position(schema, name)
+        if schema.columns[position].type is ColumnType.VECTOR:
+            raise TypeMismatchError(f"cannot GROUP BY {name}: vectors cannot be compared")
+        if position in group_positions:
+            raise SqlError(f"column {name} is listed more than once in GROUP BY")
+        group_positions.append(position)
+
+    specs: list[AggregateSpec] = []
+    slot_of: dict[ast.Aggregate, int] = {}
+
+    def output_position(item: ast.SelectItem) -> int:
+        """Where an item sits in the aggregate operator's output row."""
+        if isinstance(item, ast.Distance):
+            raise SqlError(
+                "a vector distance cannot be combined with GROUP BY or aggregate functions"
+            )
+        if isinstance(item, ast.Aggregate):
+            if item not in slot_of:
+                slot_of[item] = len(specs)
+                specs.append(_aggregate_spec(table, item))
+            return len(group_positions) + slot_of[item]
+        position = expressions.column_position(schema, item)
+        if position not in group_positions:
+            raise SqlError(
+                f"column {item} must appear in GROUP BY or be used inside an aggregate function"
+            )
+        return group_positions.index(position)
+
+    select_positions: list[int | DistanceSpec] = [
+        output_position(item) for item in statement.columns
+    ]
+    names = tuple(
+        item.label if isinstance(item, ast.Aggregate) else str(item) for item in statement.columns
+    )
+    keys: list[SortKey] = [
+        (output_position(order.column), order.descending) for order in statement.order_by
+    ]
+    output_names = tuple(schema.columns[p].name for p in group_positions) + tuple(
+        spec.label for spec in specs
+    )
+
+    plan: Operator
+    answerable_from_metadata = all(
+        spec.position is None
+        or (spec.function in ("MIN", "MAX") and spec.position in table.indexes)
+        for spec in specs
+    )
+    if not group_positions and statement.where is None and specs and answerable_from_metadata:
+        plan = MetadataAggregate(table, specs)
+        plan.est_rows = 1.0
+        _rows, pages = table.ensure_stats()
+        plan.cost = sum(
+            float(pages) if spec.position is None else float(table.indexes[spec.position].height())
+            for spec in specs
+        )
+    else:
+        child, _ordered = plan_access(table, statement.where)
+        plan = HashAggregate(child, group_positions, specs, output_names)
+        # The number of groups is unknown without column statistics. The square
+        # root of the input size is a common stand-in; it only affects EXPLAIN.
+        plan.est_rows = max(1.0, child.est_rows**0.5) if group_positions else 1.0
+        plan.cost = child.cost + child.est_rows * optimizer.ROW_CPU
+
+    limit = statement.limit
+    if keys:
+        child = plan
+        if limit is not None:
+            plan = TopN(child, keys, limit, output_names)
+            plan.est_rows = min(child.est_rows, float(limit))
+        else:
+            plan = Sort(child, keys, output_names)
+            plan.est_rows = child.est_rows
+        plan.cost = child.cost + optimizer.sort_cost(child.est_rows)
+    elif limit is not None:
+        child = plan
+        plan = Limit(child, limit)
+        plan.est_rows, plan.cost = min(child.est_rows, float(limit)), child.cost
+
+    child = plan
+    plan = Project(child, select_positions, names)
     plan.est_rows, plan.cost = child.est_rows, child.cost
     return plan, names
 

@@ -231,6 +231,27 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 * **Reason:** Measured recall@10 at 100 was 0.87 to 0.97 across the three evaluation datasets, at 10 to 16 times the speed of exact search. At 50 recall fell to 0.75 to 0.85. The setting can be changed per database at any time.
 * **Date:** 2026-10-11
 
+## D-046 — Aggregation by hashing, in memory
+* **Decision:** `HashAggregate` keeps one small running state per group in a dictionary keyed by the `GROUP BY` values.
+* **Alternatives:** Sort the input by the group columns and aggregate runs of equal keys.
+* **Reason:** One pass, no sort, and memory proportional to the number of groups. Sort-based aggregation can spill to disk when groups outgrow memory, which this engine does not attempt.
+* **Date:** 2026-10-11
+
+## D-047 — A selected column must be in GROUP BY or inside an aggregate
+* **Alternatives:** Return an arbitrary row's value for such a column, as MySQL historically did.
+* **Reason:** There is no correct single value, and silently picking one hides bugs. The error names the column.
+* **Date:** 2026-10-11
+
+## D-048 — COUNT(*), MIN and MAX are answered from metadata when possible
+* **Decision:** With no `WHERE` and no `GROUP BY`, `COUNT(*)` reads slot counts from heap page headers and `MIN`/`MAX` of an indexed column read the first or last B+ tree key.
+* **Alternatives:** Always scan; or answer `COUNT(*)` from the planner's cached row count.
+* **Reason:** These are common queries and the stored structures already hold the answer. The cached row count is not used because it exists for cost estimates and a query's answer should come from stored data.
+* **Date:** 2026-10-11
+
+## D-049 — No HAVING, DISTINCT or expressions over aggregates
+* **Reason:** Each needs general expressions in the select list, which the grammar does not have. Aggregates take a plain column, and results are named after the expression (`sum(qty)`), since there are no aliases.
+* **Date:** 2026-10-11
+
 ## D-019 — Optional dependencies only
 * **Alternatives:** Make `typer` a hard dependency.
 * **Reason:** The engine installs with no third-party packages. `typer`, test tools, `matplotlib` and `numpy` are extras.

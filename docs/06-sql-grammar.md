@@ -34,11 +34,14 @@ row           ::= "(" literal { "," literal } ")"
 
 select        ::= "SELECT" select_list "FROM" ident
                   [ "WHERE" expr ]
+                  [ "GROUP" "BY" ident { "," ident } ]
                   [ "ORDER" "BY" order_item { "," order_item } ]
                   [ "LIMIT" integer ]
 select_list   ::= "*" | select_item { "," select_item }
-select_item   ::= ident | distance
-order_item    ::= ( ident | distance ) [ "ASC" | "DESC" ]
+select_item   ::= ident | distance | aggregate
+order_item    ::= select_item [ "ASC" | "DESC" ]
+aggregate     ::= "COUNT" "(" ( "*" | ident ) ")"
+                | ( "SUM" | "AVG" | "MIN" | "MAX" ) "(" ident ")"
 distance      ::= ident ( "<->" | "<=>" ) vector
 
 update        ::= "UPDATE" ident "SET" assignment { "," assignment } [ "WHERE" expr ]
@@ -84,6 +87,15 @@ Precedence, loosest to tightest: `OR`, `AND`, `NOT`, comparison. This falls out 
 | `TEXT` compared with a number | Error at planning time, before any row is read |
 | `TEXT` ordering | By Unicode code point; no collation |
 | Real `NaN` | Cannot be written as a literal and is rejected by the record encoder |
+
+**Aggregates and GROUP BY** (details in `12-aggregates-and-joins.md`)
+
+* `COUNT(*)`, `COUNT(col)`, `SUM(col)`, `AVG(col)`, `MIN(col)`, `MAX(col)`. `SUM` and `AVG` need a numeric column.
+* Every selected column must be listed in `GROUP BY` or be inside an aggregate. `SELECT *` cannot be combined with either.
+* All aggregates except `COUNT(*)` ignore NULLs. With no `GROUP BY`, a query over no rows still returns one row: `COUNT` is 0, the others NULL.
+* In `GROUP BY`, NULLs form one group.
+* `ORDER BY` may name a `GROUP BY` column or an aggregate, including one that is not selected.
+* `HAVING`, `DISTINCT` and expressions over aggregates are not supported.
 
 **Vectors**
 

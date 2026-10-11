@@ -20,7 +20,7 @@ from typing import Any
 
 from mvrs_db.catalog.catalog import Table
 from mvrs_db.execution.expressions import Predicate, Row, format_value
-from mvrs_db.index.keys import encode_key
+from mvrs_db.index.keys import decode_key, encode_key
 from mvrs_db.storage.heap_file import RecordId
 from mvrs_db.storage.record import Value, decode_record, raw_vector
 from mvrs_db.vector import distance
@@ -461,6 +461,145 @@ class Project(Operator):
 
     def describe(self) -> str:
         return f"Project({', '.join(self.names)})"
+
+
+@dataclass(frozen=True, slots=True)
+class AggregateSpec:
+    """One checked aggregate: the function and the column position it reads."""
+
+    function: str  # COUNT, SUM, AVG, MIN or MAX
+    position: int | None  # None only for COUNT(*)
+    label: str  # for example "sum(price)"
+
+
+# The row every aggregate operator emits carries no record ID of its own.
+_NO_RECORD = RecordId(0, 0)
+
+
+class HashAggregate(Operator):
+    """GROUP BY and aggregate functions.
+
+    Rows are read once. Each row's group is found in a dictionary keyed by its
+    GROUP BY values, and that group's running state is updated: a count, a
+    total, a smallest and largest value. Nothing but one small state per group
+    is kept, so memory grows with the number of groups, not the number of rows.
+
+    Output rows are (group columns..., aggregate results...). With no GROUP BY
+    there is exactly one group, and it produces a row even when no input row
+    arrives: COUNT gives 0 and the other functions give NULL.
+
+    SQL's NULL rules: COUNT(*) counts rows; every other aggregate ignores NULL
+    inputs, and gives NULL if it saw no non-NULL value. In GROUP BY, NULLs form
+    one group together.
+
+    The alternative is sort-based aggregation: sort by the group columns, then
+    aggregate runs of equal rows. It needs no dictionary and produces sorted
+    output, but pays for a sort. Hashing is the usual choice when groups fit in
+    memory, which is the only case this engine handles.
+    """
+
+    def __init__(
+        self,
+        child: Operator,
+        group_positions: list[int],
+        specs: list[AggregateSpec],
+        names: tuple[str, ...],
+    ) -> None:
+        self.children = (child,)
+        self.group_positions = group_positions
+        self.specs = specs
+        self.names = names
+
+    def rows(self) -> Iterator[Entry]:
+        group_positions, specs = self.group_positions, self.specs
+        width = len(specs)
+        # Per aggregate, per group: [count of non-NULL inputs, total, smallest, largest].
+        groups: dict[tuple[Value, ...], list[list[Any]]] = {}
+        for _rid, row in self.children[0].rows():
+            key = tuple(row[p] for p in group_positions)
+            states = groups.get(key)
+            if states is None:
+                states = groups[key] = [[0, 0, None, None] for _ in range(width)]
+            for spec, state in zip(specs, states, strict=True):
+                if spec.position is None:
+                    state[0] += 1
+                    continue
+                value = row[spec.position]
+                if value is None:
+                    continue
+                state[0] += 1
+                function = spec.function
+                if function in ("SUM", "AVG"):
+                    state[1] += value
+                elif function == "MIN":
+                    if state[2] is None or value < state[2]:
+                        state[2] = value
+                elif function == "MAX" and (state[3] is None or value > state[3]):
+                    state[3] = value
+        if not groups and not group_positions:
+            groups[()] = [[0, 0, None, None] for _ in range(width)]
+        for key, states in groups.items():
+            yield (
+                _NO_RECORD,
+                key + tuple(_finish(spec, s) for spec, s in zip(specs, states, strict=True)),
+            )
+
+    def describe(self) -> str:
+        functions = ", ".join(spec.label for spec in self.specs)
+        if not self.group_positions:
+            return f"Aggregate({functions})"
+        columns = ", ".join(self.names[: len(self.group_positions)])
+        return f"HashAggregate(group by {columns}{'; ' + functions if functions else ''})"
+
+
+def _finish(spec: AggregateSpec, state: list[Any]) -> Value:
+    count, total, smallest, largest = state
+    function = spec.function
+    if function == "COUNT":
+        return int(count)
+    if count == 0:
+        return None
+    if function == "SUM":
+        result: Value = total
+        return result
+    if function == "AVG":
+        return float(total / count)
+    return smallest if function == "MIN" else largest  # type: ignore[no-any-return]
+
+
+class MetadataAggregate(Operator):
+    """Answer COUNT(*), MIN and MAX without reading any rows.
+
+    COUNT(*) over a whole table only needs the number of live slots in each
+    heap page, so no record is decoded. MIN and MAX of an indexed column are the
+    first and last keys of its B+ tree, found by walking down one edge of the
+    tree. The planner uses this only when the query has no WHERE and no GROUP
+    BY and every aggregate can be answered this way.
+    """
+
+    def __init__(self, table: Table, specs: list[AggregateSpec]) -> None:
+        self.table = table
+        self.specs = specs
+
+    def rows(self) -> Iterator[Entry]:
+        table = self.table
+        values: list[Value] = []
+        for spec in self.specs:
+            if spec.position is None:
+                values.append(table.heap.count()[0])
+                continue
+            tree = table.indexes[spec.position]
+            key = tree.first_key() if spec.function == "MIN" else tree.last_key()
+            column_type = table.schema.columns[spec.position].type
+            values.append(None if key is None else decode_key(column_type, key))
+        yield _NO_RECORD, tuple(values)
+
+    def describe(self) -> str:
+        parts = []
+        for spec in self.specs:
+            source = "heap page slot counts" if spec.position is None else "index edge"
+            parts.append(f"{spec.label} from {source}")
+        return f"MetadataAggregate({self.table.schema.name}: {'; '.join(parts)})"
 
 
 def explain(operator: Operator, indent: int = 0) -> list[str]:

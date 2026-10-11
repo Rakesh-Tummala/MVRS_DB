@@ -13,7 +13,7 @@ It stores tables in its own checksummed page file, indexes them with a B+ tree, 
 | Storage | Fixed-size pages (4 KiB by default) with a CRC32 checksum, page ID and version in every header; slotted pages with stable record IDs; an explicit binary row format |
 | Buffer pool | LRU eviction, pin counts, dirty tracking, and transaction before-images (no-steal) |
 | Index | A persistent B+ tree with order-preserving byte keys, splits at every level, and linked leaves for range scans |
-| SQL | `CREATE TABLE`, `DROP TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `WHERE` with `AND`/`OR`/`NOT` and three-valued NULL logic, `ORDER BY`, `LIMIT`, `PRIMARY KEY`, `UNIQUE`, `NOT NULL`, `EXPLAIN` |
+| SQL | `CREATE TABLE`, `DROP TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `WHERE` with `AND`/`OR`/`NOT` and three-valued NULL logic, `ORDER BY`, `LIMIT`, `PRIMARY KEY`, `UNIQUE`, `NOT NULL`, `EXPLAIN`, and `COUNT`/`SUM`/`AVG`/`MIN`/`MAX` with `GROUP BY` |
 | Planner | Cost-based choice between a full scan and an index scan, sort elimination, top-N; constants fitted from measurements |
 | Durability | Write-ahead log of page images, redo-only recovery, checkpoints, torn-page repair |
 | Transactions | `BEGIN` / `COMMIT` / `ROLLBACK`, strict two-phase locking per table, one writer and many readers, deadlock detection |

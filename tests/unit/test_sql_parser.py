@@ -244,8 +244,8 @@ def test_syntax_errors(text: str, message: str) -> None:
     [
         ("SELECT * FROM a JOIN b ON a.x = b.y", "JOIN"),
         ("SELECT DISTINCT a FROM t", "DISTINCT"),
-        ("SELECT COUNT(*) FROM t", "COUNT"),
-        ("SELECT * FROM t GROUP BY a", "GROUP"),
+        ("SELECT COUNT(DISTINCT a) FROM t", "DISTINCT"),
+        ("SELECT a FROM t GROUP BY a HAVING a > 1", "HAVING"),
         ("SELECT * FROM t WHERE a IN (1, 2)", "IN"),
         ("SELECT * FROM t WHERE a LIKE 'x%'", "LIKE"),
         ("SELECT * FROM t WHERE a BETWEEN 1 AND 2", "BETWEEN"),
