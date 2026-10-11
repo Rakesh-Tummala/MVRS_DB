@@ -14,7 +14,7 @@ What MVRS_DB does not do, stated plainly. Each item is a real difference from a 
 | B+ tree | Merging or rebalancing after deletes, reverse scans | Emptied leaves are reused by later inserts but never freed. `ORDER BY ... DESC` always sorts. |
 | Storage | Records larger than a page, shrinking the file, compression, encryption | |
 | Interface | Network server, prepared statements, parameter binding, streaming results | Values are written into the SQL text; results are returned as a complete list. |
-| Vector search | Nearest-neighbour queries and any vector index | The `VECTOR(n)` column type exists (Phase 8, part 1): vectors can be stored, updated and read back. Searching by similarity is not built yet. |
+| Vector search | An approximate index (HNSW or similar) | Exact search works: `ORDER BY v <-> [..] LIMIT k`. It measures every row, so it is linear in table size. A query with a `WHERE` clause takes a slower path. See `11-vector-search.md`. |
 
 ## Limits that will surprise you
 

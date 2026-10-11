@@ -221,14 +221,14 @@ class _Parser:
 
     def _select(self) -> ast.Select:
         self._expect_keyword("SELECT")
-        columns: tuple[str, ...] | None
+        columns: tuple[str | ast.Distance, ...] | None
         if self._accept_symbol("*"):
             columns = None
         else:
-            names = [self._identifier("column name or *")]
+            items = [self._column_or_distance("column name or *")]
             while self._accept_symbol(","):
-                names.append(self._identifier("column name"))
-            columns = tuple(names)
+                items.append(self._column_or_distance("column name"))
+            columns = tuple(items)
         self._expect_keyword("FROM")
         table = self._identifier("table name")
         where = self._where()
@@ -249,8 +249,18 @@ class _Parser:
                 raise SqlSyntaxError("LIMIT is too large")
         return ast.Select(table, columns, where, tuple(order_by), limit)
 
+    def _column_or_distance(self, what: str) -> str | ast.Distance:
+        """A column name, optionally followed by `<-> [vector]` or `<=> [vector]`."""
+        column = self._identifier(what)
+        if not self._is_symbol("<->", "<=>"):
+            return column
+        operator = self._advance().value
+        if not self._is_symbol("["):
+            raise self._error("a vector such as [0.1, 0.2, 0.3]")
+        return ast.Distance(column, operator, self._vector())
+
     def _order_item(self) -> ast.OrderItem:
-        column = self._identifier("column name")
+        column = self._column_or_distance("column name")
         if self._accept_keyword("DESC"):
             return ast.OrderItem(column, True)
         self._accept_keyword("ASC")
@@ -335,6 +345,12 @@ class _Parser:
         if token.kind is TokenKind.SYMBOL and token.value in _COMPARISONS:
             self._index += 1
             return ast.Compare(_COMPARISONS[token.value], left, self._operand())
+        if self._is_symbol("<->", "<=>"):
+            where = describe_position(self._text, token.position)
+            raise SqlSyntaxError(
+                f"a vector distance can be used in the SELECT list and in ORDER BY, "
+                f"not in WHERE, at {where}"
+            )
         raise self._error("a comparison operator or IS NULL")
 
     def _enter(self) -> None:

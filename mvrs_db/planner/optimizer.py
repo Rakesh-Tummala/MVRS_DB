@@ -50,6 +50,12 @@ SEQ_PAGE = 1.0
 ROW_CPU = 0.28
 INDEX_ROW = 0.63
 SORT_ROW = 0.005  # per row, per log2(rows)
+# Per vector element, for an exact nearest-neighbour scan. Measured with
+# benchmarks/vector_search.py: about 10 microseconds per 768-element row on the
+# raw NumPy path, which is roughly 0.002 sequential pages per element. There is
+# only one plan for such a query, so this number affects the cost EXPLAIN shows
+# and nothing else.
+VECTOR_ELEMENT = 0.002
 
 DEFAULT_EQUALITY = 0.1
 DEFAULT_RANGE = 1 / 3
@@ -67,6 +73,11 @@ def index_scan_cost(matching_rows: float, height: int) -> float:
 
 def sort_cost(rows: float) -> float:
     return rows * math.log2(rows + 2) * SORT_ROW
+
+
+def vector_scan_cost(rows: float, dimensions: int) -> float:
+    """Extra cost of measuring the distance from a query vector to every candidate row."""
+    return rows * dimensions * VECTOR_ELEMENT
 
 
 def range_selectivity(table: Table, column: int, key_range: KeyRange, rows: int) -> float:

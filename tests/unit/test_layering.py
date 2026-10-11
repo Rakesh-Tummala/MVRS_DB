@@ -17,6 +17,9 @@ ALLOWED_INTERNAL_IMPORTS = {
     # The catalog uses the CREATE TABLE syntax node as its input description.
     "catalog": BASE | {"mvrs_db.storage", "mvrs_db.index", "mvrs_db.sql", "mvrs_db.catalog"},
     "transactions": BASE | {"mvrs_db.transactions"},
+    # Distance functions depend on nothing in the engine, so that vector
+    # search cannot affect relational correctness.
+    "vector": BASE | {"mvrs_db.vector"},
     "planner": BASE
     | {
         "mvrs_db.storage",
@@ -25,6 +28,7 @@ ALLOWED_INTERNAL_IMPORTS = {
         "mvrs_db.sql",
         "mvrs_db.execution",
         "mvrs_db.planner",
+        "mvrs_db.vector",
     },
     "execution": BASE
     | {
@@ -33,6 +37,7 @@ ALLOWED_INTERNAL_IMPORTS = {
         "mvrs_db.catalog",
         "mvrs_db.sql",
         "mvrs_db.execution",
+        "mvrs_db.vector",
     },
 }
 # The planner builds trees of operators, so it sits above the operator and

@@ -89,15 +89,24 @@ class Insert:
 
 
 @dataclass(frozen=True, slots=True)
-class OrderItem:
+class Distance:
+    """`column <-> [vector]` or `column <=> [vector]`: distance to a query vector."""
+
     column: str
+    operator: str  # "<->" (Euclidean) or "<=>" (cosine)
+    vector: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OrderItem:
+    column: str | Distance
     descending: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class Select:
     table: str
-    columns: tuple[str, ...] | None  # None: SELECT *
+    columns: tuple[str | Distance, ...] | None  # None: SELECT *
     where: Expr | None = None
     order_by: tuple[OrderItem, ...] = ()
     limit: int | None = None

@@ -187,6 +187,28 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 * **Reason:** Catalog records written before vectors existed decode unchanged, so no format version change was needed.
 * **Date:** 2026-10-11
 
+## D-038 — Nearest-neighbour search is written as ORDER BY with pgvector's operators
+* **Decision:** `ORDER BY column <-> [vector] LIMIT k` (Euclidean) and `<=>` (cosine). The expression is also allowed in the `SELECT` list.
+* **Alternatives:** A function such as `NEAREST(column, vector, k)`; a separate `SEARCH` statement.
+* **Reason:** It reuses `ORDER BY ... LIMIT`, which already means "the best k", and anyone who has used pgvector can read it. Cost: the grammar gains its only expression form outside `WHERE`.
+* **Date:** 2026-10-11
+
+## D-039 — Rows with no distance sort last in both directions
+* **Alternatives:** Follow the engine's general rule (NULL first ascending, last descending).
+* **Reason:** A nearest-neighbour result that starts with the rows that could not be measured is useless. This is a stated exception, tested in both directions.
+* **Date:** 2026-10-11
+
+## D-040 — Exact search reads undecoded vectors when it can
+* **Decision:** With NumPy installed and no `WHERE` clause, `VectorTopK` reads records from the heap, passes the stored float bytes to NumPy, and decodes only the winning rows.
+* **Alternatives:** Always pull decoded rows from the child operator, as every other operator does.
+* **Reason:** Measured. With decoded rows NumPy was only 1.3 to 1.5 times faster than pure Python, because building tuples of Python floats dominated. The raw path is 2.8 to 8.4 times faster than pure Python and beats a plain table scan. Cost: one operator bypasses the row abstraction, and queries with a `WHERE` clause do not benefit.
+* **Date:** 2026-10-11
+
+## D-041 — NumPy stays optional; pure Python is the fallback
+* **Alternatives:** Require NumPy for vector queries.
+* **Reason:** The engine still installs with no third-party packages, and the pure-Python `distance()` doubles as the readable reference the fast paths are tested against. Both run in every search test.
+* **Date:** 2026-10-11
+
 ## D-019 — Optional dependencies only
 * **Alternatives:** Make `typer` a hard dependency.
 * **Reason:** The engine installs with no third-party packages. `typer`, test tools, `matplotlib` and `numpy` are extras.

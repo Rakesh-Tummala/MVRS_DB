@@ -113,6 +113,48 @@ def encode_record(types: Sequence[ColumnType], values: Sequence[Value]) -> bytes
     return bytes((RECORD_FORMAT,)) + bytes(bitmap) + b"".join(parts)
 
 
+def raw_vector(
+    types: Sequence[ColumnType], data: bytes, column: int, dimension: int
+) -> bytes | None:
+    """The stored bytes of one VECTOR column, without decoding the record.
+
+    Returns the 4 * dimension bytes of 32-bit floats, or None if the column is
+    NULL. Vector search uses this to hand whole batches of vectors to NumPy
+    without first building a Python tuple of floats for every row.
+
+    Earlier columns are skipped by reading only their lengths. The same
+    structural checks as decode_record apply to everything that is touched.
+    """
+    count = len(types)
+    bitmap_len = (count + 7) // 8
+    if len(data) < 1 + bitmap_len or data[0] != RECORD_FORMAT:
+        raise CorruptRecordError("record header is malformed")
+    if data[1 + (column >> 3)] & (1 << (column & 7)):
+        return None
+    pos = 1 + bitmap_len
+    end = len(data)
+    for i in range(column):
+        if data[1 + (i >> 3)] & (1 << (i & 7)):
+            continue
+        column_type = types[i]
+        if column_type is ColumnType.INTEGER or column_type is ColumnType.REAL:
+            pos += 8
+        else:
+            if pos + 2 > end:
+                raise CorruptRecordError(f"column {i}: length runs past the end of the record")
+            length = _U16.unpack_from(data, pos)[0]
+            pos += 2 + (length if column_type is ColumnType.TEXT else 4 * length)
+    if pos + 2 > end:
+        raise CorruptRecordError(f"column {column}: vector length runs past the end")
+    stored = _U16.unpack_from(data, pos)[0]
+    pos += 2
+    if stored != dimension or pos + 4 * dimension > end:
+        raise CorruptRecordError(
+            f"column {column}: stored vector has {stored} elements, expected {dimension}"
+        )
+    return data[pos : pos + 4 * dimension]
+
+
 def decode_record(types: Sequence[ColumnType], data: bytes) -> tuple[Value, ...]:
     """Decode one row. Raises CorruptRecordError on anything malformed."""
     count = len(types)

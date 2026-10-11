@@ -16,12 +16,14 @@ from __future__ import annotations
 import heapq
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 from mvrs_db.catalog.catalog import Table
 from mvrs_db.execution.expressions import Predicate, Row, format_value
 from mvrs_db.index.keys import encode_key
 from mvrs_db.storage.heap_file import RecordId
-from mvrs_db.storage.record import Value, decode_record
+from mvrs_db.storage.record import Value, decode_record, raw_vector
+from mvrs_db.vector import distance
 
 Entry = tuple[RecordId, Row]
 SortKey = tuple[int, bool]  # (column position, descending)
@@ -233,16 +235,187 @@ class Limit(Operator):
         return f"Limit({self.limit})"
 
 
-class Project(Operator):
-    def __init__(self, child: Operator, positions: list[int], names: tuple[str, ...]) -> None:
+@dataclass(frozen=True, slots=True)
+class DistanceSpec:
+    """A checked `column <-> [vector]` expression: which column, which measure, to what."""
+
+    position: int
+    column: str
+    metric: str
+    query: tuple[float, ...]
+
+    def describe(self) -> str:
+        shown = ", ".join(f"{x:g}" for x in self.query[:4])
+        if len(self.query) > 4:
+            shown += f", ... {len(self.query)} numbers"
+        return f"{self.column} {distance.SYMBOLS[self.metric]} [{shown}]"
+
+    def of(self, row: Row) -> float | None:
+        vector = row[self.position]
+        if vector is None:
+            return None
+        return distance.distance(vector, self.query, self.metric)  # type: ignore[arg-type]
+
+
+class VectorTopK(Operator):
+    """Exact nearest-neighbour search: measure every candidate row, keep the best k.
+
+    Candidates are processed in chunks. The distances for a chunk are computed
+    in one batch and merged with the best k found so far, so memory stays at one
+    chunk plus k rows however large the table is.
+
+    It is exact because every row is measured. That makes it the baseline any
+    approximate index has to be compared against, and it costs time
+    proportional to (rows x dimensions).
+
+    Two ways of getting the candidates:
+
+    * General path: pull decoded rows from the child operator. Needed when a
+      WHERE clause has to be evaluated, and when NumPy is not installed.
+    * Raw path (`raw_table` set): read records straight from the heap and hand
+      the stored 32-bit floats to NumPy without turning them into Python
+      objects. Only the k winning rows are decoded. Turning a 768-number vector
+      into a Python tuple costs far more than measuring its distance, so this
+      path is several times faster. The planner uses it when there is no WHERE
+      clause and NumPy is available.
+
+    Rows with no distance (a NULL vector, or a zero vector under cosine
+    distance) come last, whichever direction is asked for. Ties keep scan order.
+    """
+
+    CHUNK = 1024
+
+    def __init__(
+        self,
+        child: Operator,
+        spec: DistanceSpec,
+        limit: int | None,
+        descending: bool,
+        raw_table: Table | None = None,
+    ) -> None:
         self.children = (child,)
-        self.positions = positions
+        self.spec = spec
+        self.limit = limit
+        self.descending = descending
+        self.raw_table = raw_table
+
+    def rows(self) -> Iterator[Entry]:
+        limit = self.limit
+        if limit == 0:
+            return
+        sign = -1.0 if self.descending else 1.0
+        # (sort key, arrival number, candidate); the arrival number breaks ties stably.
+        best: list[tuple[float, int, Any]] = []
+        undefined: list[Any] = []
+        arrival = 0
+
+        chunks = self._raw_chunks() if self.raw_table is not None else self._decoded_chunks()
+        for candidates, distances in chunks:
+            for candidate, value in zip(candidates, distances, strict=True):
+                if value is None:
+                    if limit is None or len(undefined) < limit:
+                        undefined.append(candidate)
+                else:
+                    best.append((sign * value, arrival, candidate))
+                arrival += 1
+            if limit is not None and len(best) > limit:
+                best = heapq.nsmallest(limit, best, key=_distance_order)
+
+        best.sort(key=_distance_order)
+        ordered = [candidate for _key, _arrival, candidate in best] + undefined
+        if limit is not None:
+            ordered = ordered[:limit]
+        if self.raw_table is None:
+            yield from ordered
+            return
+        # The raw path carried record IDs only; decode just the winners.
+        types = self.raw_table.schema.column_types
+        heap = self.raw_table.heap
+        for rid in ordered:
+            yield rid, decode_record(types, heap.read(rid))
+
+    def _decoded_chunks(self) -> Iterator[tuple[list[Entry], list[float | None]]]:
+        spec, position = self.spec, self.spec.position
+        chunk: list[Entry] = []
+
+        def measure() -> tuple[list[Entry], list[float | None]]:
+            vectors = [entry[1][position] for entry in chunk if entry[1][position] is not None]
+            measured = iter(
+                distance.batch_distances(vectors, spec.query, spec.metric)  # type: ignore[arg-type]
+            )
+            values = [None if entry[1][position] is None else next(measured) for entry in chunk]
+            return list(chunk), values
+
+        for entry in self.children[0].rows():
+            chunk.append(entry)
+            if len(chunk) >= self.CHUNK:
+                yield measure()
+                chunk.clear()
+        if chunk:
+            yield measure()
+
+    def _raw_chunks(self) -> Iterator[tuple[list[RecordId], list[float | None]]]:
+        assert self.raw_table is not None
+        spec = self.spec
+        types = self.raw_table.schema.column_types
+        dimension = len(spec.query)
+        rids: list[RecordId] = []
+        buffers: list[bytes | None] = []
+
+        def measure() -> tuple[list[RecordId], list[float | None]]:
+            present = [raw for raw in buffers if raw is not None]
+            measured = iter(
+                distance.batch_distances_raw(b"".join(present), dimension, spec.query, spec.metric)
+            )
+            values = [None if raw is None else next(measured) for raw in buffers]
+            return list(rids), values
+
+        for rid, record in self.raw_table.heap.scan():
+            rids.append(rid)
+            buffers.append(raw_vector(types, record, spec.position, dimension))
+            if len(rids) >= self.CHUNK:
+                yield measure()
+                rids.clear()
+                buffers.clear()
+        if rids:
+            yield measure()
+
+    def describe(self) -> str:
+        which = "farthest" if self.descending else "nearest"
+        count = "all rows" if self.limit is None else f"{self.limit} {which}"
+        if self.raw_table is not None:
+            engine = "NumPy on undecoded rows"
+        else:
+            engine = "NumPy" if distance.numpy_available() else "pure Python"
+        return f"VectorTopK({count} by {self.spec.describe()}; exact scan, {engine})"
+
+
+def _distance_order(item: tuple[float, int, Any]) -> tuple[float, int]:
+    return item[0], item[1]
+
+
+class Project(Operator):
+    """Keep the requested columns. An item is a column position or a distance to compute."""
+
+    def __init__(
+        self, child: Operator, items: list[int | DistanceSpec], names: tuple[str, ...]
+    ) -> None:
+        self.children = (child,)
+        self.items = items
         self.names = names
 
     def rows(self) -> Iterator[Entry]:
-        positions = self.positions
+        items = self.items
+        if all(isinstance(item, int) for item in items):
+            positions: list[int] = items  # type: ignore[assignment]
+            for rid, row in self.children[0].rows():
+                yield rid, tuple(row[p] for p in positions)
+            return
         for rid, row in self.children[0].rows():
-            yield rid, tuple(row[p] for p in positions)
+            yield (
+                rid,
+                tuple(row[item] if isinstance(item, int) else item.of(row) for item in items),
+            )
 
     def describe(self) -> str:
         return f"Project({', '.join(self.names)})"

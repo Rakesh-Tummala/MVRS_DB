@@ -88,7 +88,7 @@ The C: drive is nearly full. Nothing from this project may be written to C:.
 ## Current status
 
 * **Built (2026-10-11):** Phases 0 to 7. Storage, B+ tree, SQL, planner, write-ahead log and recovery, transactions with table locks, CLI, demo, benchmarks.
-* **Phase 8 in progress, in parts:** part 1 (the `VECTOR(n)` column type) is done. Part 2 (exact top-k search with NumPy) and part 3 (approximate index) are not started. Stop after each part and wait for my go-ahead.
+* **Phase 8 in progress, in parts:** part 1 (the `VECTOR(n)` column type) and part 2 (exact top-k search, `ORDER BY v <-> [..] LIMIT k`) are done; see `docs/11-vector-search.md`. Part 3 (approximate index) is not started. Stop after each part and wait for my go-ahead.
 * **Not built:** inner joins, MVCC, delta log records, B+ tree rebalancing on delete. See `docs/LIMITATIONS.md`.
 * **Next for me:** work through `docs/STUDY-GUIDE.md`, then write the case study in my own words.
 * **Docs:** `docs/01` to `docs/10`, `DECISIONS.md`, `LIMITATIONS.md`, `STUDY-GUIDE.md`. Benchmark report: `benchmarks/results/REPORT.md`.

@@ -52,6 +52,9 @@ UNSUPPORTED_KEYWORDS = frozenset(
     """.split()
 )
 
+# Vector distance operators: <-> is Euclidean, <=> is cosine. They must be
+# tried before the two-character symbols, or "<=>" would be read as "<=" ">".
+_THREE_CHAR_SYMBOLS = ("<->", "<=>")
 _TWO_CHAR_SYMBOLS = ("<=", ">=", "!=", "<>")
 # "." is only tokenised so the parser can explain that table.column is unsupported.
 # "[" and "]" delimit vector literals: [0.1, 0.2, 0.3].
@@ -102,6 +105,9 @@ def tokenize(text: str) -> list[Token]:
             i = _number(text, i, tokens)
         elif ch == "'":
             i = _string(text, i, tokens)
+        elif text[i : i + 3] in _THREE_CHAR_SYMBOLS:
+            tokens.append(Token(TokenKind.SYMBOL, text[i : i + 3], i))
+            i += 3
         elif text[i : i + 2] in _TWO_CHAR_SYMBOLS:
             tokens.append(Token(TokenKind.SYMBOL, text[i : i + 2], i))
             i += 2

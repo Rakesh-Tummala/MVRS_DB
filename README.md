@@ -17,6 +17,7 @@ It stores tables in its own checksummed page file, indexes them with a B+ tree, 
 | Planner | Cost-based choice between a full scan and an index scan, sort elimination, top-N; constants fitted from measurements |
 | Durability | Write-ahead log of page images, redo-only recovery, checkpoints, torn-page repair |
 | Transactions | `BEGIN` / `COMMIT` / `ROLLBACK`, strict two-phase locking per table, one writer and many readers, deadlock detection |
+| Vectors | A `VECTOR(n)` column type and exact nearest-neighbour search: `ORDER BY embedding <-> [0.1, 0.2] LIMIT 5` (Euclidean) or `<=>` (cosine). No approximate index. |
 
 ## Install
 
@@ -121,6 +122,7 @@ Start with [docs/STUDY-GUIDE.md](docs/STUDY-GUIDE.md), which gives a reading ord
 | [09-btree.md](docs/09-btree.md) | Node layout, splits, range scans |
 | [05-wal-and-recovery.md](docs/05-wal-and-recovery.md) | The log, the commit protocol, recovery, what COMMIT guarantees |
 | [10-transactions.md](docs/10-transactions.md) | Locking, isolation, deadlock |
+| [11-vector-search.md](docs/11-vector-search.md) | The vector type, distance measures, and how exact search runs |
 | [06-sql-grammar.md](docs/06-sql-grammar.md) | The supported SQL, as a grammar, with its type and NULL rules |
 | [07-invariants.md](docs/07-invariants.md) | Every invariant, and what happens in each failure case |
 | [DECISIONS.md](docs/DECISIONS.md) | Each design decision, its alternatives and the reason |

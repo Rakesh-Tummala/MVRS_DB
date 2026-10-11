@@ -23,13 +23,15 @@ removes any chance of the range extraction changing a query's meaning.
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass
 
 from mvrs_db import config
 from mvrs_db.catalog.catalog import Table
-from mvrs_db.errors import TypeMismatchError
+from mvrs_db.errors import SqlError, TypeMismatchError
 from mvrs_db.execution import expressions
 from mvrs_db.execution.operators import (
+    DistanceSpec,
     Filter,
     IndexScan,
     KeyRange,
@@ -40,10 +42,12 @@ from mvrs_db.execution.operators import (
     Sort,
     SortKey,
     TopN,
+    VectorTopK,
 )
 from mvrs_db.planner import optimizer
 from mvrs_db.sql import ast
 from mvrs_db.storage.record import ColumnType, Value
+from mvrs_db.vector import distance
 
 _FLIPPED = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "=": "="}
 
@@ -210,15 +214,28 @@ def plan_access(
 def plan_select(table: Table, statement: ast.Select) -> tuple[Operator, tuple[str, ...]]:
     """Build the operator tree for a SELECT and return it with its output column names."""
     schema = table.schema
+    names: tuple[str, ...]
+    items: list[int | DistanceSpec]
     if statement.columns is None:
         names = schema.column_names
-        positions = list(range(len(names)))
+        items = list(range(len(names)))
     else:
-        names = statement.columns
-        positions = [expressions.column_position(schema, name) for name in names]
+        names = tuple(
+            "distance" if isinstance(column, ast.Distance) else column
+            for column in statement.columns
+        )
+        items = [
+            distance_spec(table, column)
+            if isinstance(column, ast.Distance)
+            else expressions.column_position(schema, column)
+            for column in statement.columns
+        ]
+
+    if any(isinstance(item.column, ast.Distance) for item in statement.order_by):
+        return _plan_nearest(table, statement, items, names), names
 
     keys: list[SortKey] = [
-        (expressions.column_position(schema, item.column), item.descending)
+        (expressions.column_position(schema, str(item.column)), item.descending)
         for item in statement.order_by
     ]
     for position, _descending in keys:
@@ -249,6 +266,64 @@ def plan_select(table: Table, statement: ast.Select) -> tuple[Operator, tuple[st
         plan.cost = child.cost
 
     child = plan
-    plan = Project(child, positions, tuple(names))
+    plan = Project(child, items, names)
     plan.est_rows, plan.cost = child.est_rows, child.cost
-    return plan, tuple(names)
+    return plan, names
+
+
+def distance_spec(table: Table, node: ast.Distance) -> DistanceSpec:
+    """Check a `column <-> [vector]` expression against the table."""
+    schema = table.schema
+    position = expressions.column_position(schema, node.column)
+    column = schema.columns[position]
+    symbol = node.operator
+    if column.type is not ColumnType.VECTOR:
+        raise TypeMismatchError(
+            f"{symbol} needs a VECTOR column, but {schema.name}.{column.name} is {column.type.name}"
+        )
+    if len(node.vector) != column.dimension:
+        raise TypeMismatchError(
+            f"{schema.name}.{column.name} is VECTOR({column.dimension}), but the vector "
+            f"after {symbol} has {len(node.vector)} numbers"
+        )
+    try:
+        query = distance.as_float32(node.vector)
+    except (OverflowError, struct.error):
+        raise TypeMismatchError(
+            f"a number in the vector after {symbol} is too large for a 32-bit float"
+        ) from None
+    metric = distance.OPERATORS[symbol]
+    if metric == distance.COSINE and distance.is_zero(query):
+        raise TypeMismatchError(
+            "cosine distance (<=>) to an all-zero vector is undefined: it has no direction"
+        )
+    return DistanceSpec(position, column.name, metric, query)
+
+
+def _plan_nearest(
+    table: Table, statement: ast.Select, items: list[int | DistanceSpec], names: tuple[str, ...]
+) -> Operator:
+    """ORDER BY a vector distance: scan the candidates, keep the k best.
+
+    WHERE is applied first, so the search is over the rows that pass the filter.
+    There is no vector index yet, which makes this exact and linear in the
+    number of candidate rows.
+    """
+    if len(statement.order_by) != 1:
+        raise SqlError("ORDER BY a vector distance cannot be combined with other sort keys")
+    item = statement.order_by[0]
+    assert isinstance(item.column, ast.Distance)
+    spec = distance_spec(table, item.column)
+
+    child, _ordered = plan_access(table, statement.where)
+    # With no WHERE clause nothing needs the decoded rows, so the stored bytes
+    # can go straight to NumPy and only the winners are decoded.
+    raw_table = table if statement.where is None and distance.numpy_available() else None
+    plan: Operator = VectorTopK(child, spec, statement.limit, item.descending, raw_table)
+    kept = child.est_rows if statement.limit is None else min(child.est_rows, statement.limit)
+    plan.est_rows = float(kept)
+    plan.cost = child.cost + optimizer.vector_scan_cost(child.est_rows, len(spec.query))
+
+    project = Project(plan, items, names)
+    project.est_rows, project.cost = plan.est_rows, plan.cost
+    return project
