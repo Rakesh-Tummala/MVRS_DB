@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from mvrs_db.catalog.catalog import Table
+from mvrs_db.errors import KeyTooLargeError
 from mvrs_db.execution.expressions import Predicate, Row, format_value
 from mvrs_db.index.keys import decode_key, encode_key
 from mvrs_db.storage.heap_file import RecordId
@@ -461,6 +462,131 @@ class Project(Operator):
 
     def describe(self) -> str:
         return f"Project({', '.join(self.names)})"
+
+
+class HashJoin(Operator):
+    """Inner join on equality, by hashing.
+
+    Build: read one input completely and file its rows in a dictionary under
+    their join value. Probe: read the other input a row at a time and look its
+    join value up. Each lookup is constant time, so the whole join costs about
+    (rows on one side + rows on the other), where comparing every pair would
+    cost their product.
+
+    The build side is held in memory, so the planner builds on the smaller
+    input. A NULL join value matches nothing, not even another NULL, so those
+    rows are dropped from both sides.
+
+    Output rows are always (left table's columns..., right table's columns...),
+    whichever side was built.
+    """
+
+    def __init__(
+        self,
+        build: Operator,
+        probe: Operator,
+        build_key: int,
+        probe_key: int,
+        *,
+        build_is_left: bool,
+        condition: str,
+        build_name: str,
+    ) -> None:
+        # Children are listed left table first, to match the output column order.
+        self.children = (build, probe) if build_is_left else (probe, build)
+        self.build = build
+        self.probe = probe
+        self.build_key = build_key
+        self.probe_key = probe_key
+        self.build_is_left = build_is_left
+        self.condition = condition
+        self.build_name = build_name
+
+    def rows(self) -> Iterator[Entry]:
+        build_key, probe_key, build_is_left = self.build_key, self.probe_key, self.build_is_left
+        buckets: dict[Value, list[Row]] = {}
+        for _rid, row in self.build.rows():
+            key = row[build_key]
+            if key is not None:
+                buckets.setdefault(key, []).append(row)
+        if not buckets:
+            return
+        for _rid, row in self.probe.rows():
+            key = row[probe_key]
+            if key is None:
+                continue
+            for match in buckets.get(key, ()):
+                yield _NO_RECORD, (match + row) if build_is_left else (row + match)
+
+    def describe(self) -> str:
+        return f"HashJoin({self.condition}; hash table on {self.build_name})"
+
+
+class IndexJoin(Operator):
+    """Inner join on equality, using an index on one table's join column.
+
+    For each row of the outer input, look its join value up in the inner
+    table's B+ tree and fetch the matching row. Nothing is built in memory and
+    the inner table is never scanned, so this wins when the outer input is
+    small. Each lookup walks the tree, though, so with many outer rows the hash
+    join's single pass over both tables is cheaper. The planner compares the
+    two estimates.
+
+    The inner column is a primary key or UNIQUE column, so each outer row
+    matches at most one inner row. Conditions on the inner table alone
+    (`inner_predicate`) are checked on the fetched row.
+    """
+
+    def __init__(
+        self,
+        outer: Operator,
+        inner: Table,
+        outer_key: int,
+        inner_column: int,
+        inner_predicate: Predicate | None,
+        *,
+        outer_is_left: bool,
+        condition: str,
+        inner_filter_text: str,
+    ) -> None:
+        self.children = (outer,)
+        self.inner = inner
+        self.outer_key = outer_key
+        self.inner_column = inner_column
+        self.inner_predicate = inner_predicate
+        self.outer_is_left = outer_is_left
+        self.condition = condition
+        self.inner_filter_text = inner_filter_text
+
+    def rows(self) -> Iterator[Entry]:
+        inner = self.inner
+        tree = inner.indexes[self.inner_column]
+        column_type = inner.schema.columns[self.inner_column].type
+        types = inner.schema.column_types
+        heap = inner.heap
+        predicate = self.inner_predicate
+        outer_key, outer_is_left = self.outer_key, self.outer_is_left
+        for _rid, row in self.children[0].rows():
+            value = row[outer_key]
+            if value is None:
+                continue
+            try:
+                key = encode_key(column_type, value)
+            except KeyTooLargeError:
+                continue  # longer than any key the index can hold, so it matches nothing
+            rid = tree.get(key)
+            if rid is None:
+                continue
+            match = decode_record(types, heap.read(rid))
+            if predicate is not None and predicate(match) is not True:
+                continue
+            yield _NO_RECORD, (row + match) if outer_is_left else (match + row)
+
+    def describe(self) -> str:
+        schema = self.inner.schema
+        column = schema.columns[self.inner_column].name
+        extra = f"; then {self.inner_filter_text}" if self.inner_filter_text else ""
+        return f"IndexJoin({self.condition}; look up {schema.name}.{column}{extra})"
 
 
 @dataclass(frozen=True, slots=True)

@@ -216,7 +216,7 @@ def test_deep_nesting_is_limited_not_a_crash() -> None:
         ("SELECT * FROM t WHERE (a = 1", "expected '\\)'"),
         ("SELECT * FROM t LIMIT -1", "non-negative integer"),
         ("SELECT * FROM t LIMIT 1.5", "non-negative integer"),
-        ("SELECT * FROM t extra", "expected end of statement"),
+        ("SELECT * FROM t alias extra", "expected end of statement"),
         ("SELECT * FROM t; SELECT * FROM t", "expected end of statement"),
         ("SELECT a b FROM t", "expected FROM"),
         ("INSERT INTO t VALUES ()", "expected a value"),
@@ -242,7 +242,7 @@ def test_syntax_errors(text: str, message: str) -> None:
 @pytest.mark.parametrize(
     ("text", "word"),
     [
-        ("SELECT * FROM a JOIN b ON a.x = b.y", "JOIN"),
+        ("SELECT * FROM a LEFT JOIN b ON a.x = b.y", "LEFT"),
         ("SELECT DISTINCT a FROM t", "DISTINCT"),
         ("SELECT COUNT(DISTINCT a) FROM t", "DISTINCT"),
         ("SELECT a FROM t GROUP BY a HAVING a > 1", "HAVING"),
@@ -263,11 +263,30 @@ def test_unsupported_sql_is_named_not_misread(text: str, word: str) -> None:
         parse(text)
 
 
-def test_qualified_names_are_rejected_with_an_explanation() -> None:
-    with pytest.raises(SqlSyntaxError, match="qualified names"):
-        parse("SELECT t.a FROM t")
-    with pytest.raises(SqlSyntaxError, match="qualified names"):
-        parse("SELECT * FROM t WHERE t.a = 1")
+def test_qualified_names_are_kept_as_written_for_the_planner_to_resolve() -> None:
+    statement = parse("SELECT t.a FROM t WHERE t.a = 1 AND 2 < t.b")
+    assert isinstance(statement, ast.Select)
+    assert statement.columns == ("t.a",)
+    assert statement.where == ast.And(
+        ast.Compare("=", C("t.a"), L(1)), ast.Compare("<", L(2), C("t.b"))
+    )
+
+
+def test_a_table_alias_is_recorded() -> None:
+    statement = parse("SELECT x.a FROM t x WHERE x.a = 1")
+    assert isinstance(statement, ast.Select)
+    assert (statement.table, statement.alias) == ("t", "x")
+    assert parse("SELECT a FROM t").alias is None  # type: ignore[union-attr]
+
+
+def test_qualified_names_are_rejected_where_they_make_no_sense() -> None:
+    for text in (
+        "INSERT INTO t (t.a) VALUES (1)",
+        "UPDATE t SET t.a = 1",
+        "CREATE TABLE s.t (a INT PRIMARY KEY)",
+    ):
+        with pytest.raises(SqlSyntaxError, match="not allowed here"):
+            parse(text)
 
 
 def test_arithmetic_is_rejected() -> None:

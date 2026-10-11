@@ -35,6 +35,11 @@ Run the tests with:
 | 11 | Execution | `01-architecture.md` | `execution/expressions.py`, `operators.py`, `executor.py` | `integration/test_sql.py` |
 | 12 | Planner and optimiser | `planner/optimizer.py` docstring | `planner/planner.py`, `planner/optimizer.py` | `integration/test_planner.py` |
 | 13 | Transactions and locks | `10-transactions.md` | `database.py`, `transactions/lock_manager.py` | `test_transactions.py`, `concurrency/` |
+| 14 | Aggregates | `12-aggregates-and-joins.md` | `HashAggregate`, `MetadataAggregate` in `execution/operators.py`; `_plan_aggregate` in `planner/planner.py` | `integration/test_aggregates.py` |
+| 15 | Joins | `12-aggregates-and-joins.md` | `planner/scope.py`; `_plan_join` in `planner/planner.py`; `HashJoin`, `IndexJoin` in `execution/operators.py` | `integration/test_joins.py` |
+| 16 | Vector search | `11-vector-search.md` | `vector/distance.py`, `vector/hnsw.py`; `VectorTopK`, `VectorIndexScan` in `execution/operators.py` | `integration/test_vectors.py`, `test_vector_search.py`, `test_vector_index.py` |
+
+Topics 14 to 16 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
 
 ## Questions to be able to answer
 

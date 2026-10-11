@@ -69,7 +69,7 @@ class _Parser:
             return SqlSyntaxError(f"{token.value} is not supported by MVRS_DB, at {where}")
         if token.kind is TokenKind.SYMBOL and token.value == ".":
             return SqlSyntaxError(
-                f"qualified names (table.column) are not supported by MVRS_DB, at {where}"
+                f"a qualified name (table.column) is not allowed here, at {where}"
             )
         found = "end of statement" if token.kind is TokenKind.EOF else repr(token.value)
         return SqlSyntaxError(f"expected {expected} but found {found} at {where}")
@@ -236,14 +236,15 @@ class _Parser:
                 items.append(self._select_item("column name"))
             columns = tuple(items)
         self._expect_keyword("FROM")
-        table = self._identifier("table name")
+        table, alias = self._table_and_alias()
+        join = self._join()
         where = self._where()
         group_by: list[str] = []
         if self._accept_keyword("GROUP"):
             self._expect_keyword("BY")
-            group_by.append(self._identifier("column name"))
+            group_by.append(self._column_name("column name"))
             while self._accept_symbol(","):
-                group_by.append(self._identifier("column name"))
+                group_by.append(self._column_name("column name"))
         order_by: list[ast.OrderItem] = []
         if self._accept_keyword("ORDER"):
             self._expect_keyword("BY")
@@ -259,7 +260,48 @@ class _Parser:
             limit = int(token.value)
             if limit > _INT64_MAX:
                 raise SqlSyntaxError("LIMIT is too large")
-        return ast.Select(table, columns, where, tuple(order_by), limit, tuple(group_by))
+        return ast.Select(
+            table, columns, where, tuple(order_by), limit, tuple(group_by), alias, join
+        )
+
+    def _table_and_alias(self) -> tuple[str, str | None]:
+        """A table name, optionally followed by a short name for it: `orders o`."""
+        table = self._identifier("table name")
+        if self._current.kind is TokenKind.IDENT:
+            return table, self._advance().value
+        return table, None
+
+    def _join(self) -> ast.Join | None:
+        """[INNER] JOIN table [alias] ON column = column."""
+        if self._accept_keyword("INNER"):
+            self._expect_keyword("JOIN")
+        elif not self._accept_keyword("JOIN"):
+            return None
+        table, alias = self._table_and_alias()
+        self._expect_keyword("ON")
+        left = self._column_name("a column name")
+        if not self._accept_symbol("="):
+            where = describe_position(self._text, self._current.position)
+            raise SqlSyntaxError(
+                f"a join condition must be one equality, column = column, at {where}"
+            )
+        right = self._column_name("a column name")
+        if self._is_keyword("JOIN", "INNER", "AND", "OR"):
+            where = describe_position(self._text, self._current.position)
+            what = (
+                "only two tables can be joined"
+                if self._is_keyword("JOIN", "INNER")
+                else "a join condition must be one equality; put other conditions in WHERE"
+            )
+            raise SqlSyntaxError(f"{what}, at {where}")
+        return ast.Join(table, alias, left, right)
+
+    def _column_name(self, what: str) -> str:
+        """A column name, optionally qualified by a table or alias: `price` or `o.price`."""
+        name = self._identifier(what)
+        if self._accept_symbol("."):
+            return f"{name}.{self._identifier('a column name after the dot')}"
+        return name
 
     def _select_item(self, what: str) -> ast.SelectItem:
         """A column, a vector distance, or an aggregate such as COUNT(*) or SUM(price)."""
@@ -276,13 +318,13 @@ class _Parser:
                 )
             column = None
         else:
-            column = self._identifier("a column name or *")
+            column = self._column_name("a column name or *")
         self._expect_symbol(")")
         return ast.Aggregate(token.value, column)
 
     def _column_or_distance(self, what: str) -> str | ast.Distance:
         """A column name, optionally followed by `<-> [vector]` or `<=> [vector]`."""
-        column = self._identifier(what)
+        column = self._column_name(what)
         if not self._is_symbol("<->", "<=>"):
             return column
         operator = self._advance().value
@@ -391,7 +433,7 @@ class _Parser:
 
     def _operand(self) -> ast.Operand:
         if self._current.kind is TokenKind.IDENT:
-            return ast.ColumnRef(self._advance().value)
+            return ast.ColumnRef(self._column_name("a column name"))
         return ast.Literal(self._literal())
 
     def _vector(self) -> tuple[float, ...]:

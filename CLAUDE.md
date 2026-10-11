@@ -89,9 +89,9 @@ The C: drive is nearly full. Nothing from this project may be written to C:.
 
 * **Built (2026-10-11):** Phases 0 to 7. Storage, B+ tree, SQL, planner, write-ahead log and recovery, transactions with table locks, CLI, demo, benchmarks.
 * **Phase 8 done (2026-10-11):** the `VECTOR(n)` column type, exact top-k search (`ORDER BY v <-> [..] LIMIT k`), and an in-memory HNSW index (`VECTOR(n) HNSW`). See `docs/11-vector-search.md`. The index is not persisted; it is rebuilt on first use after each open.
-* **Aggregates done (2026-10-11):** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` and `GROUP BY`; see `docs/12-aggregates-and-joins.md`. Inner joins are next and not started.
+* **Aggregates and joins done (2026-10-11):** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `GROUP BY`, and two-table inner joins with aliases and qualified names; see `docs/12-aggregates-and-joins.md`.
 * **How I like work delivered:** in parts, stopping after each part for my go-ahead, and asking before each push.
-* **Not built:** inner joins, `HAVING`, MVCC, delta log records, B+ tree rebalancing on delete. See `docs/LIMITATIONS.md`.
+* **Not built:** outer joins, joins of three or more tables, `HAVING`, MVCC, delta log records, B+ tree rebalancing on delete, a persistent vector index. See `docs/LIMITATIONS.md`.
 * **Next for me:** work through `docs/STUDY-GUIDE.md`, then write the case study in my own words.
 * **Docs:** `docs/01` to `docs/10`, `DECISIONS.md`, `LIMITATIONS.md`, `STUDY-GUIDE.md`. Benchmark report: `benchmarks/results/REPORT.md`.
 

@@ -50,6 +50,15 @@ SEQ_PAGE = 1.0
 ROW_CPU = 0.28
 INDEX_ROW = 0.63
 SORT_ROW = 0.005  # per row, per log2(rows)
+# Joins, measured with benchmarks/join_methods.py on the development machine:
+# a hash join spends about 0.45 microseconds per row built or probed, and an
+# index join about 20 microseconds per outer row against an index of height 2
+# (a tree descent, a heap fetch and a row decode). In sequential-page units
+# that is 0.085 and about 3.7. Only one index height was measured, so the split
+# between the fixed part and the per-level part is an assumption.
+HASH_ROW = 0.085  # per row built or probed
+INDEX_LOOKUP = 2.6  # per outer row: fetch and decode the matching inner row
+INDEX_LEVEL = 0.55  # per outer row, per level of the inner index
 # Per vector element, for an exact nearest-neighbour scan. Measured with
 # benchmarks/vector_search.py: about 10 microseconds per 768-element row on the
 # raw NumPy path, which is roughly 0.002 sequential pages per element. There is
@@ -82,6 +91,16 @@ def sort_cost(rows: float) -> float:
 def vector_scan_cost(rows: float, dimensions: int) -> float:
     """Extra cost of measuring the distance from a query vector to every candidate row."""
     return rows * dimensions * VECTOR_ELEMENT
+
+
+def hash_join_cost(left_rows: float, right_rows: float) -> float:
+    """Building and probing a hash table: one dictionary operation per row of each input."""
+    return (left_rows + right_rows) * HASH_ROW
+
+
+def index_join_cost(outer_rows: float, height: int) -> float:
+    """One index lookup and one row fetch for every outer row."""
+    return outer_rows * (INDEX_LOOKUP + height * INDEX_LEVEL)
 
 
 def vector_index_cost(ef: int, dimensions: int) -> float:

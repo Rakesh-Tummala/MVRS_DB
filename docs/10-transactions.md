@@ -28,7 +28,7 @@ Strict two-phase locking with two kinds of resource:
 | A table | `SELECT`, `EXPLAIN` | `INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE`, `DROP TABLE` |
 | The writer slot | — | any statement that writes |
 
-A transaction takes locks as it goes and releases all of them only when it ends.
+A transaction takes locks as it goes and releases all of them only when it ends. A join takes a shared lock on both of its tables, in name order.
 
 **One writer at a time.** The first writing statement of a transaction takes the writer slot and keeps it until commit or rollback. This is not an optimisation waiting to be removed: page-image logging and page-level rollback are only correct if a page never holds uncommitted changes from two transactions.
 

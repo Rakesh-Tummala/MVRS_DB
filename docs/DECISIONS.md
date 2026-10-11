@@ -252,6 +252,37 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 * **Reason:** Each needs general expressions in the select list, which the grammar does not have. Aggregates take a plain column, and results are named after the expression (`sum(qty)`), since there are no aliases.
 * **Date:** 2026-10-11
 
+## D-050 — Column names are resolved once, before planning
+* **Decision:** `scope.py` rewrites every column name to `alias.column` for a join and to the bare name for one table. The joined row is described by a combined schema, so filters, sorts, aggregates and projection treat a join like a table.
+* **Alternatives:** Carry (table, column) pairs through the whole planner and executor.
+* **Reason:** Joins were added without changing the expression compiler, the aggregate planner or any existing operator. Ambiguous and unknown names are reported in one place.
+* **Date:** 2026-10-11
+
+## D-051 — Two join methods, chosen by cost
+* **Decision:** Hash join always; index join as an alternative when the inner join column is a primary key or `UNIQUE` column of the same type as the outer one. The cheaper estimate wins.
+* **Alternatives:** Nested loops over every pair; merge join; always hash.
+* **Reason:** Comparing every pair is quadratic. Measured on a 20,000-row inner table, the index join is 90 times faster than the hash join for 10 outer rows and 5 times slower for 50,000, so neither can be the only method. Merge join needs sorted inputs and is left out.
+* **Date:** 2026-10-11
+
+## D-052 — Join cost constants come from measurement
+* **Decision:** `HASH_ROW = 0.085`, `INDEX_LOOKUP = 2.6`, `INDEX_LEVEL = 0.55`.
+* **Reason:** With first-guess constants the planner chose the index join at 3,000 outer rows, where it measured slower. After fitting to `benchmarks/join_methods.py` it chose the faster method at all seven tested sizes. Only one index height was measured, so the split between the two index constants is an assumption.
+* **Date:** 2026-10-11
+
+## D-053 — Single-table WHERE conditions are pushed below the join
+* **Alternatives:** Apply the whole `WHERE` clause to the joined rows.
+* **Reason:** Fewer rows are joined, and each table's own index can serve its condition. It is safe because only inner joins exist; an outer join would need care here.
+* **Date:** 2026-10-11
+
+## D-054 — Joins are limited to two tables and one equality
+* **Alternatives:** Arbitrary join trees and conditions.
+* **Reason:** A third table brings join-order optimisation, a subject of its own. For an inner join, extra conditions can go in `WHERE` with the same result, so a single equality in `ON` loses no expressive power.
+* **Date:** 2026-10-11
+
+## D-055 — A join locks both tables in name order
+* **Reason:** A fixed order rules out two joins deadlocking against each other over the same pair of tables. The deadlock detector would catch it anyway; this avoids the rollback.
+* **Date:** 2026-10-11
+
 ## D-019 — Optional dependencies only
 * **Alternatives:** Make `typer` a hard dependency.
 * **Reason:** The engine installs with no third-party packages. `typer`, test tools, `matplotlib` and `numpy` are extras.

@@ -339,13 +339,30 @@ class Database:
         self._require_open()
         return Transaction(next(self._txn_ids), explicit)
 
+    def _lock_for_reading(self, txn: Transaction, statement: ast.Select) -> None:
+        """Shared locks on every table a SELECT reads.
+
+        A join locks both tables, in name order. Taking locks in one fixed
+        order means two joins of the same tables can never each hold one lock
+        while waiting for the other.
+        """
+        tables = {statement.table}
+        if statement.join is not None:
+            tables.add(statement.join.table)
+        for name in sorted(tables):
+            self._locks.acquire(txn.txn_id, _table_lock(name), SHARED)
+
     def _run(self, txn: Transaction, statement: ast.Statement) -> Result:
         """Lock what the statement needs and execute it."""
         if isinstance(statement, ast.Select):
-            self._locks.acquire(txn.txn_id, _table_lock(statement.table), SHARED)
+            self._lock_for_reading(txn, statement)
             return self._executor.select(statement)
         if isinstance(statement, ast.Explain):
-            self._locks.acquire(txn.txn_id, _table_lock(statement.statement.table), SHARED)
+            inner = statement.statement
+            if isinstance(inner, ast.Select):
+                self._lock_for_reading(txn, inner)
+            else:
+                self._locks.acquire(txn.txn_id, _table_lock(inner.table), SHARED)
             return self._executor.explain(statement)
         if isinstance(statement, (ast.Begin, ast.Commit, ast.Rollback)):
             raise TransactionError("transaction control is handled by the connection")

@@ -24,17 +24,20 @@ removes any chance of the range extraction changing a query's meaning.
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from mvrs_db import config
 from mvrs_db.catalog.catalog import Table
-from mvrs_db.errors import SqlError, TypeMismatchError
+from mvrs_db.catalog.schema import TableSchema
+from mvrs_db.errors import InternalError, SqlError, TypeMismatchError
 from mvrs_db.execution import expressions
 from mvrs_db.execution.operators import (
     AggregateSpec,
     DistanceSpec,
     Filter,
     HashAggregate,
+    HashJoin,
+    IndexJoin,
     IndexScan,
     KeyRange,
     Limit,
@@ -49,6 +52,14 @@ from mvrs_db.execution.operators import (
     VectorTopK,
 )
 from mvrs_db.planner import optimizer
+from mvrs_db.planner.scope import (
+    Scope,
+    Source,
+    columns_in,
+    display_names,
+    rename_expr,
+    rename_select,
+)
 from mvrs_db.sql import ast
 from mvrs_db.storage.record import ColumnType, Value
 from mvrs_db.vector import distance
@@ -216,17 +227,49 @@ def plan_access(
     return best, best_ordered
 
 
-def plan_select(
-    table: Table, statement: ast.Select, vector_settings: SearchSettings | None = None
-) -> tuple[Operator, tuple[str, ...]]:
-    """Build the operator tree for a SELECT and return it with its output column names."""
-    schema = table.schema
+def _is_aggregate_query(statement: ast.Select) -> bool:
     selected = statement.columns or ()
-    if statement.group_by or any(
+    return bool(statement.group_by) or any(
         isinstance(item, ast.Aggregate)
         for item in (*selected, *(order.column for order in statement.order_by))
-    ):
-        return _plan_aggregate(table, statement)
+    )
+
+
+def plan_select(
+    table: Table,
+    statement: ast.Select,
+    vector_settings: SearchSettings | None = None,
+    right_table: Table | None = None,
+) -> tuple[Operator, tuple[str, ...]]:
+    """Build the operator tree for a SELECT and return it with its output column names.
+
+    Column names are resolved first (see scope.py). After that, a one-table
+    query is planned with bare column names and a join with `alias.column`
+    names, and neither path has to think about qualifiers again.
+    """
+    if statement.join is not None:
+        if right_table is None:
+            raise InternalError("a join was planned without its second table")
+        return _plan_join(table, right_table, statement)
+    scope = Scope([Source(statement.alias or table.schema.name, table)])
+    names = display_names(statement, table.schema.column_names)
+    plan, _plain_names = _plan_single(table, rename_select(statement, scope.plain), vector_settings)
+    return plan, names
+
+
+def unqualified_where(table: Table, where: ast.Expr | None) -> ast.Expr | None:
+    """A WHERE clause for UPDATE or DELETE with any `table.column` reduced to `column`."""
+    if where is None:
+        return None
+    return rename_expr(where, Scope([Source(table.schema.name, table)]).plain)
+
+
+def _plan_single(
+    table: Table, statement: ast.Select, vector_settings: SearchSettings | None
+) -> tuple[Operator, tuple[str, ...]]:
+    schema = table.schema
+    if _is_aggregate_query(statement):
+        return _plan_aggregate(table, schema, statement)
 
     names: tuple[str, ...]
     items: list[int | DistanceSpec]
@@ -286,9 +329,8 @@ def plan_select(
     return plan, names
 
 
-def _aggregate_spec(table: Table, node: ast.Aggregate) -> AggregateSpec:
-    """Check an aggregate against the table: the column exists and has a usable type."""
-    schema = table.schema
+def _aggregate_spec(schema: TableSchema, node: ast.Aggregate) -> AggregateSpec:
+    """Check an aggregate against the input: the column exists and has a usable type."""
     if node.column is None:
         return AggregateSpec(node.function, None, node.label)
     position = expressions.column_position(schema, node.column)
@@ -306,8 +348,17 @@ def _aggregate_spec(table: Table, node: ast.Aggregate) -> AggregateSpec:
     return AggregateSpec(node.function, position, node.label)
 
 
-def _plan_aggregate(table: Table, statement: ast.Select) -> tuple[Operator, tuple[str, ...]]:
+def _plan_aggregate(
+    table: Table | None,
+    schema: TableSchema,
+    statement: ast.Select,
+    source: Operator | None = None,
+) -> tuple[Operator, tuple[str, ...]]:
     """A SELECT with GROUP BY or aggregate functions.
+
+    The input is either one table (`table` given: the WHERE clause is planned
+    here, and the metadata shortcut is possible) or an already-built operator
+    such as a join (`source` given; `schema` describes its rows).
 
     The aggregate operator turns the table's rows into rows shaped
     (group columns..., aggregate results...). ORDER BY and LIMIT then apply to
@@ -318,7 +369,6 @@ def _plan_aggregate(table: Table, statement: ast.Select) -> tuple[Operator, tupl
     many rows would have to yield one value for that column, and there is no
     right way to pick it.
     """
-    schema = table.schema
     if statement.columns is None:
         raise SqlError(
             "SELECT * cannot be used with GROUP BY or aggregate functions; name the columns"
@@ -345,7 +395,7 @@ def _plan_aggregate(table: Table, statement: ast.Select) -> tuple[Operator, tupl
         if isinstance(item, ast.Aggregate):
             if item not in slot_of:
                 slot_of[item] = len(specs)
-                specs.append(_aggregate_spec(table, item))
+                specs.append(_aggregate_spec(schema, item))
             return len(group_positions) + slot_of[item]
         position = expressions.column_position(schema, item)
         if position not in group_positions:
@@ -368,12 +418,18 @@ def _plan_aggregate(table: Table, statement: ast.Select) -> tuple[Operator, tupl
     )
 
     plan: Operator
-    answerable_from_metadata = all(
+    answerable_from_metadata = table is not None and all(
         spec.position is None
         or (spec.function in ("MIN", "MAX") and spec.position in table.indexes)
         for spec in specs
     )
-    if not group_positions and statement.where is None and specs and answerable_from_metadata:
+    if (
+        table is not None
+        and not group_positions
+        and statement.where is None
+        and specs
+        and answerable_from_metadata
+    ):
         plan = MetadataAggregate(table, specs)
         plan.est_rows = 1.0
         _rows, pages = table.ensure_stats()
@@ -382,7 +438,12 @@ def _plan_aggregate(table: Table, statement: ast.Select) -> tuple[Operator, tupl
             for spec in specs
         )
     else:
-        child, _ordered = plan_access(table, statement.where)
+        if source is not None:
+            child = source
+        elif table is not None:
+            child, _ordered = plan_access(table, statement.where)
+        else:
+            raise InternalError("an aggregate was planned with nothing to read")
         plan = HashAggregate(child, group_positions, specs, output_names)
         # The number of groups is unknown without column statistics. The square
         # root of the input size is a common stand-in; it only affects EXPLAIN.
@@ -406,6 +467,212 @@ def _plan_aggregate(table: Table, statement: ast.Select) -> tuple[Operator, tupl
 
     child = plan
     plan = Project(child, select_positions, names)
+    plan.est_rows, plan.cost = child.est_rows, child.cost
+    return plan, names
+
+
+def _all_of(conditions: list[ast.Expr]) -> ast.Expr | None:
+    """Join conditions with AND; None for an empty list."""
+    combined: ast.Expr | None = None
+    for condition in conditions:
+        combined = condition if combined is None else ast.And(combined, condition)
+    return combined
+
+
+def _comparable(left: ColumnType, right: ColumnType) -> bool:
+    numeric = (ColumnType.INTEGER, ColumnType.REAL)
+    return (left in numeric and right in numeric) or (
+        left is ColumnType.TEXT and right is ColumnType.TEXT
+    )
+
+
+def _plan_join(
+    left: Table, right: Table, statement: ast.Select
+) -> tuple[Operator, tuple[str, ...]]:
+    """An inner join of two tables on one equality.
+
+    1. Resolve names. The joined row is (left columns..., right columns...),
+       described by a combined schema whose columns are named `alias.column`.
+
+    2. Push filters down. A WHERE condition that mentions only one table is
+       applied while reading that table, before the join, so fewer rows are
+       joined (and that table's own indexes can be used). Conditions that need
+       both tables are applied to the joined rows.
+
+    3. Choose the join method by estimated cost:
+         hash join       read both inputs once, build a hash table on the
+                         smaller one;
+         index join      for each row of one input, look up the other table's
+                         index. Possible when the join column on that side is
+                         a primary key or UNIQUE column of the same type.
+       The index join wins when its outer input is small; the hash join wins
+       when both inputs are large.
+
+    4. Aggregates, ORDER BY, LIMIT and the select list are then applied to the
+       joined rows by the same operators a one-table query uses.
+    """
+    join = statement.join
+    assert join is not None
+    scope = Scope(
+        [
+            Source(statement.alias or left.schema.name, left),
+            Source(join.alias or right.schema.name, right),
+        ]
+    )
+    tables = (left, right)
+    aliases = [source.alias for source in scope.sources]
+    combined = TableSchema(
+        0,
+        f"{aliases[0]} JOIN {aliases[1]}",
+        0,
+        tuple(
+            replace(
+                column,
+                name=f"{alias}.{column.name}",
+                index_root=0,
+                primary_key=False,
+                unique=False,
+                ann="",
+            )
+            for alias, table in zip(aliases, tables, strict=True)
+            for column in table.schema.columns
+        ),
+    )
+    names = display_names(statement, combined.column_names)
+
+    # --- the ON condition: one column from each table
+    (first_side, first_position) = scope.resolve(join.left)
+    (second_side, second_position) = scope.resolve(join.right)
+    if first_side == second_side:
+        raise SqlError(
+            f"the join condition must compare a column of {aliases[0]} "
+            f"with a column of {aliases[1]}"
+        )
+    key = [0, 0]
+    key[first_side], key[second_side] = first_position, second_position
+    key_types = [tables[side].schema.columns[key[side]].type for side in (0, 1)]
+    if not _comparable(key_types[0], key_types[1]):
+        raise TypeMismatchError(
+            f"cannot join {scope.qualified(join.left)} ({key_types[first_side].name}) with "
+            f"{scope.qualified(join.right)} ({key_types[second_side].name})"
+        )
+    left_name, right_name = (join.left, join.right) if first_side == 0 else (join.right, join.left)
+    condition = f"{scope.qualified(left_name)} = {scope.qualified(right_name)}"
+
+    # --- split WHERE into per-table filters and filters on the joined row
+    per_side: list[list[ast.Expr]] = [[], []]
+    on_joined: list[ast.Expr] = []
+    for conjunct in expressions.conjuncts(statement.where):
+        sides = {scope.resolve(name)[0] for name in columns_in(conjunct)}
+        if len(sides) == 1:
+            per_side[sides.pop()].append(rename_expr(conjunct, scope.plain))
+        else:
+            on_joined.append(rename_expr(conjunct, scope.qualified))
+    side_where = [_all_of(per_side[0]), _all_of(per_side[1])]
+    inputs = [plan_access(tables[side], side_where[side])[0] for side in (0, 1)]
+    rows = [max(inputs[side].est_rows, 0.0) for side in (0, 1)]
+    totals = [float(max(tables[side].ensure_stats()[0], 1)) for side in (0, 1)]
+    unique = [key[side] in tables[side].indexes for side in (0, 1)]
+
+    # Each row of one input matches rows of the other that share its key. If
+    # the other side's key is unique there is at most one such row.
+    if unique[1]:
+        joined_rows = rows[0] * rows[1] / totals[1]
+    elif unique[0]:
+        joined_rows = rows[0] * rows[1] / totals[0]
+    else:
+        joined_rows = min(rows)
+
+    build = 0 if rows[0] <= rows[1] else 1
+    best: Operator = HashJoin(
+        inputs[build],
+        inputs[1 - build],
+        key[build],
+        key[1 - build],
+        build_is_left=build == 0,
+        condition=condition,
+        build_name=aliases[build],
+    )
+    best.cost = inputs[0].cost + inputs[1].cost + optimizer.hash_join_cost(rows[0], rows[1])
+
+    for inner in (0, 1):
+        outer = 1 - inner
+        if not unique[inner] or key_types[0] is not key_types[1]:
+            continue
+        cost = inputs[outer].cost + optimizer.index_join_cost(
+            rows[outer], tables[inner].indexes[key[inner]].height()
+        )
+        if cost >= best.cost:
+            continue
+        inner_where = side_where[inner]
+        predicate = (
+            None
+            if inner_where is None
+            else expressions.compile_predicate(inner_where, tables[inner].schema)
+        )
+        best = IndexJoin(
+            inputs[outer],
+            tables[inner],
+            key[outer],
+            key[inner],
+            predicate,
+            outer_is_left=outer == 0,
+            condition=condition,
+            inner_filter_text="" if inner_where is None else expressions.format_expr(inner_where),
+        )
+        best.cost = cost
+    best.est_rows = joined_rows
+    plan = best
+
+    joined_where = _all_of(on_joined)
+    if joined_where is not None:
+        expressions.check(joined_where, combined)
+        child = plan
+        plan = Filter(
+            child,
+            expressions.compile_predicate(joined_where, combined),
+            expressions.format_expr(joined_where),
+        )
+        plan.cost = child.cost
+        # No statistics relate columns of different tables, so this is a flat guess.
+        plan.est_rows = child.est_rows * optimizer.DEFAULT_RANGE
+
+    canonical = replace(rename_select(statement, scope.qualified), where=None)
+    if _is_aggregate_query(canonical):
+        plan, _labels = _plan_aggregate(None, combined, canonical, source=plan)
+        return plan, names
+
+    items: list[int | DistanceSpec] = []
+    for item in canonical.columns or combined.column_names:
+        if isinstance(item, ast.Distance):
+            raise SqlError("a vector distance cannot be used in a join query")
+        items.append(expressions.column_position(combined, str(item)))
+    keys: list[SortKey] = []
+    for order in canonical.order_by:
+        if isinstance(order.column, ast.Distance):
+            raise SqlError("a vector distance cannot be used in a join query")
+        position = expressions.column_position(combined, str(order.column))
+        if combined.columns[position].type is ColumnType.VECTOR:
+            raise TypeMismatchError(f"cannot ORDER BY {order.column}: vectors have no order")
+        keys.append((position, order.descending))
+
+    limit = statement.limit
+    if keys:
+        child = plan
+        if limit is not None:
+            plan = TopN(child, keys, limit, combined.column_names)
+            plan.est_rows = min(child.est_rows, float(limit))
+        else:
+            plan = Sort(child, keys, combined.column_names)
+            plan.est_rows = child.est_rows
+        plan.cost = child.cost + optimizer.sort_cost(child.est_rows)
+    elif limit is not None:
+        child = plan
+        plan = Limit(child, limit)
+        plan.est_rows, plan.cost = min(child.est_rows, float(limit)), child.cost
+
+    child = plan
+    plan = Project(child, items, names)
     plan.est_rows, plan.cost = child.est_rows, child.cost
     return plan, names
 

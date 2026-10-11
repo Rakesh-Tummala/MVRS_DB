@@ -37,7 +37,7 @@ KEYWORDS = frozenset(
     CREATE TABLE DROP INSERT INTO VALUES SELECT FROM WHERE ORDER BY ASC DESC LIMIT
     UPDATE SET DELETE EXPLAIN BEGIN COMMIT ROLLBACK AND OR NOT IS NULL
     PRIMARY KEY UNIQUE INTEGER INT REAL FLOAT TEXT VECTOR HNSW COSINE
-    COUNT SUM AVG MIN MAX GROUP
+    COUNT SUM AVG MIN MAX GROUP JOIN INNER ON
     """.split()
 )
 
@@ -46,7 +46,7 @@ KEYWORDS = frozenset(
 # keeps them from being silently read as table or column names.
 UNSUPPORTED_KEYWORDS = frozenset(
     """
-    JOIN INNER LEFT RIGHT OUTER CROSS ON USING HAVING DISTINCT UNION INTERSECT
+    LEFT RIGHT OUTER FULL CROSS NATURAL USING HAVING DISTINCT UNION INTERSECT
     EXCEPT OFFSET AS LIKE IN BETWEEN EXISTS CASE WHEN THEN ELSE END ALTER INDEX VIEW
     TRIGGER FOREIGN REFERENCES DEFAULT CHECK WITH ALL ANY TRUE FALSE BOOLEAN BLOB
     VARCHAR CHAR DATE TRANSACTION SAVEPOINT ANALYZE VACUUM
@@ -57,7 +57,7 @@ UNSUPPORTED_KEYWORDS = frozenset(
 # tried before the two-character symbols, or "<=>" would be read as "<=" ">".
 _THREE_CHAR_SYMBOLS = ("<->", "<=>")
 _TWO_CHAR_SYMBOLS = ("<=", ">=", "!=", "<>")
-# "." is only tokenised so the parser can explain that table.column is unsupported.
+# "." joins a table name or alias to a column name: orders.total.
 # "[" and "]" delimit vector literals: [0.1, 0.2, 0.3].
 _ONE_CHAR_SYMBOLS = "(),;*=<>+-.[]"
 _IDENT_START = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_")

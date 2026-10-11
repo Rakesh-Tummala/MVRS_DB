@@ -18,9 +18,9 @@ from mvrs_db.errors import (
     TypeMismatchError,
 )
 from mvrs_db.execution import expressions
-from mvrs_db.execution.operators import explain
+from mvrs_db.execution.operators import Operator, explain
 from mvrs_db.index.keys import encode_key
-from mvrs_db.planner.planner import plan_access, plan_select
+from mvrs_db.planner.planner import plan_access, plan_select, unqualified_where
 from mvrs_db.sql import ast
 from mvrs_db.storage.heap_file import RecordId
 from mvrs_db.storage.record import ColumnType, Value, encode_record
@@ -82,29 +82,34 @@ class Executor:
 
     # ------------------------------------------------------------------ queries
 
-    def select(self, statement: ast.Select) -> Result:
+    def _plan(self, statement: ast.Select) -> tuple[Operator, tuple[str, ...]]:
         table = self._catalog.get(statement.table)
-        plan, names = plan_select(table, statement, self.vector_settings)
+        right = None if statement.join is None else self._catalog.get(statement.join.table)
+        return plan_select(table, statement, self.vector_settings, right)
+
+    def select(self, statement: ast.Select) -> Result:
+        plan, names = self._plan(statement)
         rows = [row for _rid, row in plan.rows()]
         return Result(names, rows, len(rows))
 
     def explain(self, statement: ast.Explain) -> Result:
         inner = statement.statement
-        table = self._catalog.get(inner.table)
         if isinstance(inner, ast.Select):
-            lines = explain(plan_select(table, inner, self.vector_settings)[0])
+            return self._explain_lines(explain(self._plan(inner)[0]))
+        table = self._catalog.get(inner.table)
+        access, _ordered = plan_access(table, unqualified_where(table, inner.where))
+        if isinstance(inner, ast.Update):
+            self._check_assignments(table, inner)
+            changes = ", ".join(
+                f"{name} = {expressions.format_value(value)}" for name, value in inner.assignments
+            )
+            head = f"Update({table.schema.name}: {changes})"
         else:
-            access, _ordered = plan_access(table, inner.where)
-            if isinstance(inner, ast.Update):
-                self._check_assignments(table, inner)
-                changes = ", ".join(
-                    f"{name} = {expressions.format_value(value)}"
-                    for name, value in inner.assignments
-                )
-                head = f"Update({table.schema.name}: {changes})"
-            else:
-                head = f"Delete({table.schema.name})"
-            lines = [head, *explain(access, 1)]
+            head = f"Delete({table.schema.name})"
+        return self._explain_lines([head, *explain(access, 1)])
+
+    @staticmethod
+    def _explain_lines(lines: list[str]) -> Result:
         return Result(("plan",), [(line,) for line in lines], len(lines))
 
     # ------------------------------------------------------------------ DDL
@@ -184,7 +189,7 @@ class Executor:
         table = self._catalog.get(statement.table)
         schema = table.schema
         changes = self._check_assignments(table, statement)
-        access, _ordered = plan_access(table, statement.where)
+        access, _ordered = plan_access(table, unqualified_where(table, statement.where))
         # Find every target first. Updating while scanning could move a row ahead
         # of the scan and update it twice (the "Halloween problem").
         targets = list(access.rows())
@@ -239,7 +244,7 @@ class Executor:
     def delete(self, statement: ast.Delete) -> Result:
         table = self._catalog.get(statement.table)
         schema = table.schema
-        access, _ordered = plan_access(table, statement.where)
+        access, _ordered = plan_access(table, unqualified_where(table, statement.where))
         targets = list(access.rows())
         for rid, row in targets:
             for position, index in table.indexes.items():

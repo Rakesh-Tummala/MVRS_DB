@@ -32,11 +32,14 @@ insert        ::= "INSERT" "INTO" ident [ "(" ident { "," ident } ")" ]
                   "VALUES" row { "," row }
 row           ::= "(" literal { "," literal } ")"
 
-select        ::= "SELECT" select_list "FROM" ident
+select        ::= "SELECT" select_list "FROM" table_ref [ join ]
                   [ "WHERE" expr ]
                   [ "GROUP" "BY" ident { "," ident } ]
                   [ "ORDER" "BY" order_item { "," order_item } ]
                   [ "LIMIT" integer ]
+table_ref     ::= ident [ ident ]                       -- table, optional alias
+join          ::= [ "INNER" ] "JOIN" table_ref "ON" column "=" column
+column        ::= ident [ "." ident ]                   -- optionally qualified
 select_list   ::= "*" | select_item { "," select_item }
 select_item   ::= ident | distance | aggregate
 order_item    ::= select_item [ "ASC" | "DESC" ]
@@ -88,6 +91,17 @@ Precedence, loosest to tightest: `OR`, `AND`, `NOT`, comparison. This falls out 
 | `TEXT` ordering | By Unicode code point; no collation |
 | Real `NaN` | Cannot be written as a literal and is rejected by the record encoder |
 
+In `select`, every place the rules below say `ident` for a column (select items, aggregate arguments, `GROUP BY`, `ORDER BY`, operands in `WHERE`) accepts a `column`, that is, an optional `table.` or `alias.` prefix.
+
+**Joins** (details in `12-aggregates-and-joins.md`)
+
+* Two tables, inner join only, on one equality between a column of each.
+* A table may be given an alias; once it has one, its columns are qualified by the alias, not the table name.
+* A bare column name is allowed when only one table has it. A name both have must be qualified.
+* A NULL join value matches nothing.
+* `SELECT *` returns the first table's columns, then the second's, named `alias.column`.
+* `LEFT`, `RIGHT`, `FULL`, `CROSS`, `NATURAL`, `USING`, a third table, and vector distance in a join are not supported.
+
 **Aggregates and GROUP BY** (details in `12-aggregates-and-joins.md`)
 
 * `COUNT(*)`, `COUNT(col)`, `SUM(col)`, `AVG(col)`, `MIN(col)`, `MAX(col)`. `SUM` and `AVG` need a numeric column.
@@ -122,7 +136,7 @@ Precedence, loosest to tightest: `OR`, `AND`, `NOT`, comparison. This falls out 
 * `UPDATE` may change the primary key; uniqueness is checked.
 * A constraint violation fails the whole statement: a multi-row `INSERT` or `UPDATE` that fails on its third row leaves no trace of the first two. Inside `BEGIN` ... `COMMIT`, a statement that fails after changing something rolls back the whole transaction (see `10-transactions.md`).
 * `SET` accepts literals only (`SET n = 5`, not `SET n = n + 1`).
-* `table.column` names are not supported; a statement reads one table, so a bare column name is never ambiguous.
+* `table.column` names are accepted in `SELECT`, and in the `WHERE` clause of `UPDATE` and `DELETE`. They are not accepted in `INSERT` column lists, `SET`, or `CREATE TABLE`.
 
 ## Stretch (not in version 1)
 

@@ -13,8 +13,8 @@ It stores tables in its own checksummed page file, indexes them with a B+ tree, 
 | Storage | Fixed-size pages (4 KiB by default) with a CRC32 checksum, page ID and version in every header; slotted pages with stable record IDs; an explicit binary row format |
 | Buffer pool | LRU eviction, pin counts, dirty tracking, and transaction before-images (no-steal) |
 | Index | A persistent B+ tree with order-preserving byte keys, splits at every level, and linked leaves for range scans |
-| SQL | `CREATE TABLE`, `DROP TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `WHERE` with `AND`/`OR`/`NOT` and three-valued NULL logic, `ORDER BY`, `LIMIT`, `PRIMARY KEY`, `UNIQUE`, `NOT NULL`, `EXPLAIN`, and `COUNT`/`SUM`/`AVG`/`MIN`/`MAX` with `GROUP BY` |
-| Planner | Cost-based choice between a full scan and an index scan, sort elimination, top-N; constants fitted from measurements |
+| SQL | `CREATE TABLE`, `DROP TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `WHERE` with `AND`/`OR`/`NOT` and three-valued NULL logic, `ORDER BY`, `LIMIT`, `PRIMARY KEY`, `UNIQUE`, `NOT NULL`, `EXPLAIN`, `COUNT`/`SUM`/`AVG`/`MIN`/`MAX` with `GROUP BY`, and two-table inner joins with aliases |
+| Planner | Cost-based choice between a full scan and an index scan, and between a hash join and an index join; predicate pushdown, sort elimination, top-N; constants fitted from measurements |
 | Durability | Write-ahead log of page images, redo-only recovery, checkpoints, torn-page repair |
 | Transactions | `BEGIN` / `COMMIT` / `ROLLBACK`, strict two-phase locking per table, one writer and many readers, deadlock detection |
 | Vectors | A `VECTOR(n)` column type; exact nearest-neighbour search with `ORDER BY embedding <-> [0.1, 0.2] LIMIT 5` (Euclidean) or `<=>` (cosine); and an optional in-memory HNSW index (`VECTOR(n) HNSW`) for approximate search |
@@ -122,6 +122,7 @@ Start with [docs/STUDY-GUIDE.md](docs/STUDY-GUIDE.md), which gives a reading ord
 | [09-btree.md](docs/09-btree.md) | Node layout, splits, range scans |
 | [05-wal-and-recovery.md](docs/05-wal-and-recovery.md) | The log, the commit protocol, recovery, what COMMIT guarantees |
 | [10-transactions.md](docs/10-transactions.md) | Locking, isolation, deadlock |
+| [12-aggregates-and-joins.md](docs/12-aggregates-and-joins.md) | Aggregates, `GROUP BY`, and how joins are planned and executed |
 | [11-vector-search.md](docs/11-vector-search.md) | The vector type, distance measures, and how exact search runs |
 | [06-sql-grammar.md](docs/06-sql-grammar.md) | The supported SQL, as a grammar, with its type and NULL rules |
 | [07-invariants.md](docs/07-invariants.md) | Every invariant, and what happens in each failure case |

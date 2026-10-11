@@ -121,6 +121,16 @@ class OrderItem:
 
 
 @dataclass(frozen=True, slots=True)
+class Join:
+    """`JOIN table [alias] ON left = right`: an inner join on one equality."""
+
+    table: str
+    alias: str | None
+    left: str  # the two column names of the ON condition, as written
+    right: str
+
+
+@dataclass(frozen=True, slots=True)
 class Select:
     table: str
     columns: tuple[SelectItem, ...] | None  # None: SELECT *
@@ -128,6 +138,8 @@ class Select:
     order_by: tuple[OrderItem, ...] = ()
     limit: int | None = None
     group_by: tuple[str, ...] = ()
+    alias: str | None = None  # FROM table alias
+    join: Join | None = None
 
 
 @dataclass(frozen=True, slots=True)
