@@ -51,12 +51,23 @@ def coerce(table: str, column: Column, value: Value) -> Value:
             return value
         if type(value) is int:
             return float(value)
-    elif type(value) is str:
+    elif column.type is ColumnType.TEXT:
+        if type(value) is str:
+            return value
+    elif type(value) is tuple:
+        if len(value) != column.dimension:
+            raise TypeMismatchError(
+                f"column {table}.{column.name} is VECTOR({column.dimension}) and cannot hold "
+                f"a vector of {len(value)} numbers"
+            )
         return value
-    raise TypeMismatchError(
-        f"column {table}.{column.name} is {column.type.name} and cannot hold "
-        f"{expressions.format_value(value)}"
-    )
+    type_name = column.type.name
+    if column.type is ColumnType.VECTOR:
+        type_name = f"VECTOR({column.dimension})"
+    shown = expressions.format_value(value)
+    if len(shown) > 60:
+        shown = shown[:57] + "..."
+    raise TypeMismatchError(f"column {table}.{column.name} is {type_name} and cannot hold {shown}")
 
 
 def _constraint_name(column: Column) -> str:

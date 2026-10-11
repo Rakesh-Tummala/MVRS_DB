@@ -34,6 +34,7 @@ _OPERATORS: dict[str, Callable[[Any, Any], bool]] = {
 
 _NUMERIC = "a number"
 _TEXT = "text"
+_VECTOR = "a vector"
 
 
 def column_position(schema: TableSchema, name: str) -> int:
@@ -47,9 +48,13 @@ def _kind(operand: ast.Operand, schema: TableSchema) -> str | None:
     """'a number', 'text', or None for a NULL literal (which fits anything)."""
     if isinstance(operand, ast.ColumnRef):
         column_type = schema.columns[column_position(schema, operand.name)].type
+        if column_type is ColumnType.VECTOR:
+            return _VECTOR
         return _TEXT if column_type is ColumnType.TEXT else _NUMERIC
     if operand.value is None:
         return None
+    if isinstance(operand.value, tuple):
+        return _VECTOR
     return _TEXT if isinstance(operand.value, str) else _NUMERIC
 
 
@@ -57,6 +62,12 @@ def check(expr: ast.Expr, schema: TableSchema) -> None:
     """Reject unknown columns and comparisons between text and numbers."""
     if isinstance(expr, ast.Compare):
         left, right = _kind(expr.left, schema), _kind(expr.right, schema)
+        if _VECTOR in (left, right):
+            # Vectors have no natural order, and equality on floats is rarely
+            # what anyone wants. Similarity search is the way to query them.
+            raise TypeMismatchError(
+                f"vectors cannot be compared with {expr.op} in: {format_expr(expr)}"
+            )
         if left is not None and right is not None and left != right:
             raise TypeMismatchError(f"cannot compare {left} with {right} in: {format_expr(expr)}")
     elif isinstance(expr, ast.IsNull):
@@ -172,6 +183,8 @@ def format_value(value: Value) -> str:
         return "NULL"
     if isinstance(value, str):
         return "'" + value.replace("'", "''") + "'"
+    if isinstance(value, tuple):
+        return "[" + ", ".join(repr(element) for element in value) + "]"
     return repr(value)
 
 

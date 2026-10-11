@@ -31,6 +31,7 @@ _TYPE_NAMES = {
     "REAL": "REAL",
     "FLOAT": "REAL",
     "TEXT": "TEXT",
+    "VECTOR": "VECTOR",
 }
 _COMPARISONS = {"=": "=", "!=": "!=", "<>": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">="}
 _MAX_NESTING = 200
@@ -160,8 +161,18 @@ class _Parser:
         name = self._identifier("column name")
         token = self._current
         if token.kind is not TokenKind.KEYWORD or token.value not in _TYPE_NAMES:
-            raise self._error("a column type (INTEGER, REAL or TEXT)")
+            raise self._error("a column type (INTEGER, REAL, TEXT or VECTOR)")
         self._index += 1
+        dimension = 0
+        if token.value == "VECTOR":
+            # VECTOR(n): the number of elements is part of the type.
+            self._expect_symbol("(")
+            size = self._current
+            if size.kind is not TokenKind.INTEGER:
+                raise self._error("the number of dimensions, as in VECTOR(3)")
+            self._index += 1
+            dimension = int(size.value)
+            self._expect_symbol(")")
         primary_key = not_null = unique = False
         while True:
             if self._accept_keyword("PRIMARY"):
@@ -174,7 +185,9 @@ class _Parser:
                 unique = True
             else:
                 break
-        return ast.ColumnDef(name, _TYPE_NAMES[token.value], primary_key, not_null, unique)
+        return ast.ColumnDef(
+            name, _TYPE_NAMES[token.value], primary_key, not_null, unique, dimension
+        )
 
     def _drop_table(self) -> ast.DropTable:
         self._expect_keyword("DROP")
@@ -334,8 +347,26 @@ class _Parser:
             return ast.ColumnRef(self._advance().value)
         return ast.Literal(self._literal())
 
+    def _vector(self) -> tuple[float, ...]:
+        """A vector literal: [number, number, ...]. Integers are read as reals."""
+        self._expect_symbol("[")
+        elements: list[float] = []
+        while True:
+            token = self._current
+            value = self._literal()
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                where = describe_position(self._text, token.position)
+                raise SqlSyntaxError(f"a vector may contain only numbers, at {where}")
+            elements.append(float(value))
+            if not self._accept_symbol(","):
+                break
+        self._expect_symbol("]")
+        return tuple(elements)
+
     def _literal(self) -> ast.Value:
         token = self._current
+        if token.kind is TokenKind.SYMBOL and token.value == "[":
+            return self._vector()
         if token.kind is TokenKind.STRING:
             self._index += 1
             return token.value

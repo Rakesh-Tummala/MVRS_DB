@@ -36,7 +36,7 @@ KEYWORDS = frozenset(
     """
     CREATE TABLE DROP INSERT INTO VALUES SELECT FROM WHERE ORDER BY ASC DESC LIMIT
     UPDATE SET DELETE EXPLAIN BEGIN COMMIT ROLLBACK AND OR NOT IS NULL
-    PRIMARY KEY UNIQUE INTEGER INT REAL FLOAT TEXT
+    PRIMARY KEY UNIQUE INTEGER INT REAL FLOAT TEXT VECTOR
     """.split()
 )
 
@@ -54,7 +54,8 @@ UNSUPPORTED_KEYWORDS = frozenset(
 
 _TWO_CHAR_SYMBOLS = ("<=", ">=", "!=", "<>")
 # "." is only tokenised so the parser can explain that table.column is unsupported.
-_ONE_CHAR_SYMBOLS = "(),;*=<>+-."
+# "[" and "]" delimit vector literals: [0.1, 0.2, 0.3].
+_ONE_CHAR_SYMBOLS = "(),;*=<>+-.[]"
 _IDENT_START = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_")
 _IDENT_PART = _IDENT_START | frozenset("0123456789")
 _DIGITS = frozenset("0123456789")
@@ -107,7 +108,7 @@ def tokenize(text: str) -> list[Token]:
         elif ch in _ONE_CHAR_SYMBOLS:
             tokens.append(Token(TokenKind.SYMBOL, ch, i))
             i += 1
-        elif ch == '"' or ch == "`" or ch == "[":
+        elif ch == '"' or ch == "`":
             raise SqlSyntaxError(
                 f"quoted identifiers are not supported, at {describe_position(text, i)}"
             )

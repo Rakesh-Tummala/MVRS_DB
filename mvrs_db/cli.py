@@ -26,13 +26,21 @@ app = typer.Typer(
 )
 
 
+def _cell(value: object) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, tuple):  # a vector, shown the way it is written in SQL
+        return "[" + ", ".join(f"{element:g}" for element in value) + "]"
+    return str(value)
+
+
 def format_result(result: Result) -> str:
     """Render a result as an aligned text table, or a one-line summary."""
     if not result.columns:
         return f"ok ({result.rowcount} row{'s' if result.rowcount != 1 else ''} affected)"
     if result.columns == ("plan",):
         return "\n".join(str(row[0]) for row in result.rows)
-    cells = [["NULL" if value is None else str(value) for value in row] for row in result.rows]
+    cells = [[_cell(value) for value in row] for row in result.rows]
     widths = [len(name) for name in result.columns]
     for row in cells:
         for index, cell in enumerate(row):

@@ -39,5 +39,10 @@ MAX_SQL_LENGTH = 1024 * 1024
 MAX_IDENTIFIER_LENGTH = 63
 MAX_COLUMNS = 64
 
+# --- vectors ---
+# An upper bound on VECTOR(n). A vector must also fit in one record, so the
+# practical limit at the default 4 KiB page is about 1000 dimensions.
+MAX_VECTOR_DIMENSION = 4096
+
 # --- transactions ---
 DEFAULT_LOCK_TIMEOUT_SECONDS = 10.0

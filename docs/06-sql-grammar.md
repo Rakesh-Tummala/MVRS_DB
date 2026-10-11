@@ -22,6 +22,7 @@ statement     ::= ( create_table | drop_table | insert | select
 create_table  ::= "CREATE" "TABLE" ident "(" column_def { "," column_def } ")"
 column_def    ::= ident type { constraint }
 type          ::= "INTEGER" | "INT" | "REAL" | "FLOAT" | "TEXT"
+                | "VECTOR" "(" integer ")"
 constraint    ::= "PRIMARY" "KEY" | "NOT" "NULL" | "UNIQUE"
 
 drop_table    ::= "DROP" "TABLE" ident
@@ -55,7 +56,9 @@ predicate     ::= operand comp_op operand
                 | "(" expr ")"
 comp_op       ::= "=" | "!=" | "<>" | "<" | "<=" | ">" | ">="
 operand       ::= ident | literal
-literal       ::= integer | real | string | "NULL"
+literal       ::= integer | real | string | "NULL" | vector
+vector        ::= "[" number { "," number } "]"
+number        ::= integer | real
 ```
 
 Precedence, loosest to tightest: `OR`, `AND`, `NOT`, comparison. This falls out of the grammar's nesting, which is how a recursive-descent parser encodes precedence.
@@ -78,6 +81,14 @@ Precedence, loosest to tightest: `OR`, `AND`, `NOT`, comparison. This falls out 
 | `TEXT` compared with a number | Error at planning time, before any row is read |
 | `TEXT` ordering | By Unicode code point; no collation |
 | Real `NaN` | Cannot be written as a literal and is rejected by the record encoder |
+
+**Vectors**
+
+* `VECTOR(n)` holds exactly `n` numbers, `n` from 1 to 4096. A vector of any other length is a type error.
+* A vector literal is written `[0.1, 0.2, 0.3]`. Integers inside it are read as reals. It cannot be empty or nested.
+* Elements are stored as 32-bit floats, so a value read back is rounded to that precision.
+* A vector column cannot be `PRIMARY KEY` or `UNIQUE`, cannot appear in `ORDER BY`, and cannot be compared with `=`, `<` and so on. `IS NULL` and `IS NOT NULL` work.
+* Nearest-neighbour search is not implemented yet (Phase 8, part 2).
 
 **NULL (three-valued logic)**
 

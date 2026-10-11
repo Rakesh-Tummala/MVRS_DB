@@ -41,6 +41,7 @@ All limits are constants in `config.py` and are enforced with specific errors.
 | `TEXT` value | Bounded by the record size; valid UTF-8 | No overflow pages |
 | `INTEGER` | 64-bit signed | Fixed 8-byte encoding |
 | `REAL` | 64-bit IEEE-754; NaN is rejected | NaN has no place in a total order |
+| `VECTOR(n)` | n from 1 to 4096; finite 32-bit floats; must also fit in one record (about 1,000 dimensions at 4 KiB pages) | 4 bytes per element, no overflow pages |
 | Columns per table | 64 | A table definition must fit in one catalog record |
 | Identifier length | 63 bytes | Fits a 1-byte length |
 | SQL statement length | 1 MiB | Bounded parser input |

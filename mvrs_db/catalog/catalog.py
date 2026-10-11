@@ -142,13 +142,33 @@ class Catalog:
                     f"{statement.table} has {len(primary_keys)}"
                 )
 
+            for definition in definitions:
+                if definition.type_name != "VECTOR":
+                    continue
+                if definition.primary_key or definition.unique:
+                    raise CatalogError(
+                        f"column {definition.name}: a VECTOR column cannot be PRIMARY KEY or UNIQUE"
+                    )
+                if not 1 <= definition.dimension <= config.MAX_VECTOR_DIMENSION:
+                    raise CatalogError(
+                        f"column {definition.name}: VECTOR needs between 1 and "
+                        f"{config.MAX_VECTOR_DIMENSION} dimensions, not {definition.dimension}"
+                    )
+
             # Check the definition fits in a catalog record before allocating anything.
             draft = TableSchema(
                 0,
                 statement.table,
                 0,
                 tuple(
-                    Column(d.name, ColumnType[d.type_name], d.not_null, d.primary_key, d.unique)
+                    Column(
+                        d.name,
+                        ColumnType[d.type_name],
+                        d.not_null,
+                        d.primary_key,
+                        d.unique,
+                        dimension=d.dimension,
+                    )
                     for d in definitions
                 ),
             )

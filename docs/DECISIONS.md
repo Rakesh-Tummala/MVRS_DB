@@ -166,6 +166,27 @@ Each entry: what was decided, what else was considered, and why. Newest at the b
 * **Reason:** The OS releases the lock when the process dies, so a crash never leaves the database unopenable.
 * **Date:** 2026-10-11
 
+## D-034 — Project renamed from KestrelDB to MVRS_DB
+* **Decision:** Package `mvrs_db`, command `mvrs_db`, base error `MvrsDbError`, files `.mvrs`, magic bytes `MVRS_DB\0` and `MVRSWAL\0`.
+* **Reason:** To match the GitHub repository name. Earlier entries in this log keep the old name where they describe what was decided at the time.
+* **Date:** 2026-10-11
+
+## D-035 — Vectors are stored as 32-bit floats, self-describing in length
+* **Decision:** A `VECTOR(n)` value is a `u16` element count followed by 4-byte floats. The declared dimension lives in the catalog and is enforced when a value is written.
+* **Alternatives:** 64-bit floats; omitting the count and trusting the catalog.
+* **Reason:** 32 bits is the norm for embeddings and halves the space, so a 768-dimension vector fits a 4 KiB page. Keeping the count in the record lets the record decoder validate a vector without knowing the table's definition. Cost: values come back rounded to 32-bit precision.
+* **Date:** 2026-10-11
+
+## D-036 — Vectors cannot be compared, ordered or indexed by the B+ tree
+* **Alternatives:** Allow `=` on vectors; allow lexicographic ordering.
+* **Reason:** Equality on floating-point vectors is almost never what a query means, and vectors have no useful total order. Rejecting these at planning time is clearer than returning surprising results. Similarity search is the intended way to query them.
+* **Date:** 2026-10-11
+
+## D-037 — The catalog stores a vector's dimension only for vector columns
+* **Alternatives:** Bump the catalog record format and add the field to every column.
+* **Reason:** Catalog records written before vectors existed decode unchanged, so no format version change was needed.
+* **Date:** 2026-10-11
+
 ## D-019 — Optional dependencies only
 * **Alternatives:** Make `typer` a hard dependency.
 * **Reason:** The engine installs with no third-party packages. `typer`, test tools, `matplotlib` and `numpy` are extras.

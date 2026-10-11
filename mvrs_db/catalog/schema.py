@@ -6,9 +6,12 @@ A catalog record describes one table:
     [name_len u8][name]
     [column_count u16]
     per column: [name_len u8][name][type u8][flags u8][index_root u32]
+                [dimension u16]   only when the type is VECTOR
 
 flags: bit 0 = NOT NULL, bit 1 = PRIMARY KEY, bit 2 = UNIQUE.
 index_root is the root page of the column's B+ tree, or 0 if it has no index.
+dimension is the n of VECTOR(n). Storing it only for vector columns means
+records written before vectors existed still decode unchanged.
 
 This is an explicit binary layout, not the row format, because the catalog must
 be readable before any table schema is known.
@@ -41,6 +44,7 @@ class Column:
     primary_key: bool = False
     unique: bool = False
     index_root: int = 0
+    dimension: int = 0  # n for VECTOR(n); 0 for every other type
 
     @property
     def indexed(self) -> bool:
@@ -86,6 +90,8 @@ class TableSchema:
             parts.append(bytes((len(column_name),)))
             parts.append(column_name)
             parts.append(_COLUMN_TAIL.pack(int(column.type), flags, column.index_root))
+            if column.type is ColumnType.VECTOR:
+                parts.append(_U16.pack(column.dimension))
         return b"".join(parts)
 
     @classmethod
@@ -105,14 +111,24 @@ class TableSchema:
                 column_name, position = _read_name(data, position)
                 raw_type, flags, index_root = _COLUMN_TAIL.unpack_from(data, position)
                 position += _COLUMN_TAIL.size
+                column_type = ColumnType(raw_type)
+                dimension = 0
+                if column_type is ColumnType.VECTOR:
+                    dimension = _U16.unpack_from(data, position)[0]
+                    position += _U16.size
+                    if not 1 <= dimension <= config.MAX_VECTOR_DIMENSION:
+                        raise CorruptCatalogError(
+                            f"column {column_name!r} claims {dimension} vector dimensions"
+                        )
                 columns.append(
                     Column(
                         name=column_name,
-                        type=ColumnType(raw_type),
+                        type=column_type,
                         not_null=bool(flags & _NOT_NULL),
                         primary_key=bool(flags & _PRIMARY_KEY),
                         unique=bool(flags & _UNIQUE),
                         index_root=index_root,
+                        dimension=dimension,
                     )
                 )
         except (struct.error, ValueError, UnicodeDecodeError, IndexError) as exc:

@@ -27,6 +27,7 @@ from dataclasses import dataclass
 
 from mvrs_db import config
 from mvrs_db.catalog.catalog import Table
+from mvrs_db.errors import TypeMismatchError
 from mvrs_db.execution import expressions
 from mvrs_db.execution.operators import (
     Filter,
@@ -220,6 +221,11 @@ def plan_select(table: Table, statement: ast.Select) -> tuple[Operator, tuple[st
         (expressions.column_position(schema, item.column), item.descending)
         for item in statement.order_by
     ]
+    for position, _descending in keys:
+        if schema.columns[position].type is ColumnType.VECTOR:
+            raise TypeMismatchError(
+                f"cannot ORDER BY {schema.columns[position].name}: vectors have no order"
+            )
     order_column = keys[0][0] if len(keys) == 1 and not keys[0][1] else None
 
     plan, ordered = plan_access(

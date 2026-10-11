@@ -92,8 +92,9 @@ def range_selectivity(table: Table, column: int, key_range: KeyRange, rows: int)
     largest = float(decode_key(column_type, last))
     if largest <= smallest:
         return 1.0
-    start = smallest if low is None else max(smallest, float(low))
-    end = largest if high is None else min(largest, float(high))
+    # Only INTEGER and REAL columns reach this point, so the bounds are numbers.
+    start = smallest if low is None else max(smallest, float(low))  # type: ignore[arg-type]
+    end = largest if high is None else min(largest, float(high))  # type: ignore[arg-type]
     if end < start:
         return 0.0
     fraction = (end - start) / (largest - smallest)

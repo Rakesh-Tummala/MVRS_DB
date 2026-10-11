@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-Value = int | float | str | None
+Value = int | float | str | tuple[float, ...] | None
 
 # ---------------------------------------------------------------- expressions
 
@@ -63,10 +63,11 @@ Expr = Compare | IsNull | Not | And | Or
 @dataclass(frozen=True, slots=True)
 class ColumnDef:
     name: str
-    type_name: str  # INTEGER, REAL or TEXT
+    type_name: str  # INTEGER, REAL, TEXT or VECTOR
     primary_key: bool = False
     not_null: bool = False
     unique: bool = False
+    dimension: int = 0  # n in VECTOR(n); 0 for every other type
 
 
 @dataclass(frozen=True, slots=True)

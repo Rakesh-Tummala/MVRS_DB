@@ -30,8 +30,12 @@ _SIGN = 1 << 63
 _MASK = (1 << 64) - 1
 
 
-def encode_key(column_type: ColumnType, value: int | float | str) -> bytes:
-    """Encode one non-NULL value as an index key."""
+def encode_key(column_type: ColumnType, value: object) -> bytes:
+    """Encode one non-NULL value as an index key.
+
+    The value's type is checked here, at run time. Only INTEGER, REAL and TEXT
+    columns can be indexed; a vector has no order, so it cannot be a key.
+    """
     if column_type is ColumnType.INTEGER:
         if type(value) is not int or not INT64_MIN <= value <= INT64_MAX:
             raise InvalidValueError(f"{value!r} is not a 64-bit integer")

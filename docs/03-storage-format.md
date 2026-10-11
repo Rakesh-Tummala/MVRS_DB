@@ -115,7 +115,10 @@ A record is decoded against the table's schema from the catalog. It is not self-
 | `INTEGER` | 8 bytes, signed (`<q`) |
 | `REAL` | 8 bytes, IEEE-754 double (`<d`); NaN rejected at encode time |
 | `TEXT` | `u16` byte length, then UTF-8 bytes |
+| `VECTOR(n)` | `u16` element count, then that many 32-bit IEEE-754 floats (`<f`); NaN and infinity rejected |
 | NULL | Bit `i` of the bitmap set; no value bytes |
+
+A vector is stored at 32-bit precision, the usual choice for embeddings: half the space, and the models that produce them are no more precise. A value read back is the nearest 32-bit float to the one written, so `0.1` returns as `0.10000000149011612`. A 768-dimension vector takes 3,074 bytes and fits a 4 KiB page; 1,536 dimensions needs 8 KiB pages.
 
 The decoder rejects, with `CorruptRecordError`: an unknown format byte, set bits beyond column `n`, a value that runs past the end of the record, invalid UTF-8, and trailing bytes.
 
@@ -130,6 +133,7 @@ The catalog is itself a chain of heap pages, starting at the page named by `cata
 [name_len u8][name]
 [column_count u16]
 per column: [name_len u8][name][type u8][flags u8][index_root u32]
+            [dimension u16]   only when the type is VECTOR
 ```
 
 `flags`: bit 0 `NOT NULL`, bit 1 `PRIMARY KEY`, bit 2 `UNIQUE`. `index_root` is the root page of the column's B+ tree, or 0 if the column has no index. It is not the row format, because the catalog has to be readable before any schema is known. On open, the engine reads the whole chain into memory.
