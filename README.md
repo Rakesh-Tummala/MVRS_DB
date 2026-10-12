@@ -54,6 +54,14 @@ with mvrs_db.connect("shop.mvrs") as db:
         print(line)
 ```
 
+Pass values as parameters instead of building SQL strings. Placeholders are `?`, and values are never read as SQL:
+
+```python
+db.execute("INSERT INTO items VALUES (?, ?, ?)", (4, "o'brien", 9.5))
+find = db.connect().prepare("SELECT name FROM items WHERE id = ?")
+print(find.execute((4,)).rows)
+```
+
 Give each thread its own connection with `db.connect()`.
 
 ## Use it from the command line

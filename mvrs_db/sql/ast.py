@@ -13,6 +13,17 @@ Value = int | float | str | tuple[float, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
+class Param:
+    """A `?` placeholder, numbered from 0 in the order written.
+
+    Appears only in a statement template. sql/binding.py replaces every one with
+    its value before the statement is planned or executed.
+    """
+
+    index: int
+
+
+@dataclass(frozen=True, slots=True)
 class Literal:
     value: Value
 

@@ -39,6 +39,8 @@ import struct
 import sys
 import threading
 import weakref
+from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import TracebackType
@@ -57,6 +59,7 @@ from mvrs_db.errors import (
     EngineFailedError,
     LockTimeoutError,
     MvrsDbError,
+    ParameterError,
     SerializationError,
     StorageIOError,
     TransactionError,
@@ -68,7 +71,8 @@ from mvrs_db.recovery.delta import changed_ranges, delta_size, encode_delta
 from mvrs_db.recovery.recovery_manager import RecoveryStats, recover
 from mvrs_db.recovery.wal import RecordType, WalWriter
 from mvrs_db.sql import ast
-from mvrs_db.sql.parser import parse
+from mvrs_db.sql.binding import bind
+from mvrs_db.sql.parser import parse_template
 from mvrs_db.storage.buffer_pool import BufferPool, SnapshotPool
 from mvrs_db.storage.disk_manager import DiskManager
 from mvrs_db.storage.page import page_lsn, set_page_lsn
@@ -79,6 +83,11 @@ from mvrs_db.vector.hnsw import SearchSettings
 
 _PAGE_ID = struct.Struct("<I")
 _WRITER = "#writer"  # the single writer slot; '#' cannot appear in a table name
+
+
+# Parsed statements kept for reuse, and the longest statement text worth keeping.
+_PARSE_CACHE_SIZE = 256
+_MAX_CACHED_SQL = 4096
 
 
 def _table_lock(name: str) -> str:
@@ -172,6 +181,10 @@ class Database:
         self._snapshot_reads = snapshot_reads
         self._views: dict[int, Catalog] = {}
         self._views_lock = threading.Lock()
+        # Parsed statements by SQL text. A statement tree is immutable, so one
+        # entry can be shared by every connection and thread.
+        self._parsed: OrderedDict[str, tuple[ast.Statement, int]] = OrderedDict()
+        self._parsed_lock = threading.Lock()
         self._synchronous = synchronous
         self._log_deltas = log_deltas
         # Pages that have a committed full image in the log since the last
@@ -366,9 +379,28 @@ class Database:
         self._require_open()
         return Connection(self)
 
-    def execute(self, sql: str) -> Result:
-        """Run one statement on the database's default connection."""
-        return self._default.execute(sql)
+    def execute(self, sql: str, params: Sequence[object] = ()) -> Result:
+        """Run one statement on the database's default connection.
+
+        Write `?` where a value belongs and pass the values in `params`:
+        `db.execute("SELECT * FROM t WHERE id = ?", (5,))`.
+        """
+        return self._default.execute(sql, params)
+
+    def _parse(self, sql: str) -> tuple[ast.Statement, int]:
+        """The statement for this text and how many `?` it has, parsed at most once."""
+        with self._parsed_lock:
+            cached = self._parsed.get(sql)
+            if cached is not None:
+                self._parsed.move_to_end(sql)
+                return cached
+        parsed = parse_template(sql)  # outside the lock: parsing can be slow and may raise
+        if len(sql) <= _MAX_CACHED_SQL:
+            with self._parsed_lock:
+                self._parsed[sql] = parsed
+                while len(self._parsed) > _PARSE_CACHE_SIZE:
+                    self._parsed.popitem(last=False)
+        return parsed
 
     def table_names(self) -> list[str]:
         self._require_open()
@@ -764,11 +796,29 @@ class Connection:
     def in_transaction(self) -> bool:
         return self._txn is not None
 
-    def execute(self, sql: str) -> Result:
-        """Parse and run one SQL statement."""
-        statement = parse(sql)
+    def prepare(self, sql: str) -> PreparedStatement:
+        """Parse a statement now, to run it later with different parameters."""
+        self._db._require_open()
+        statement, count = self._db._parse(sql)
+        return PreparedStatement(self, statement, count)
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> Result:
+        """Parse (or reuse a parsed copy of) one SQL statement, bind `params`, and run it."""
         db = self._db
         db._require_open()
+        template, count = db._parse(sql)
+        return self._execute(template, count, params)
+
+    def _execute(self, template: ast.Statement, count: int, params: Sequence[object]) -> Result:
+        if isinstance(params, (str, bytes)) or not isinstance(params, Sequence):
+            raise ParameterError("parameters must be given as a list or tuple of values")
+        if len(params) != count:
+            raise ParameterError(
+                f"the statement has {count} `?` placeholder(s) but {len(params)} "
+                f"parameter(s) were given"
+            )
+        statement = bind(template, params) if count else template
+        db = self._db
         with self._guard:
             if isinstance(statement, ast.Begin):
                 if self._txn is not None:
@@ -821,3 +871,21 @@ class Connection:
         """Roll back any open transaction."""
         with self._guard:
             self._abandon()
+
+
+class PreparedStatement:
+    """A statement parsed once and run many times: `stmt.execute((value, ...))`.
+
+    Preparing saves the parsing, not the planning: each run is planned afresh,
+    because the best plan depends on the bound values and on the table's current
+    size. A prepared statement belongs to the connection that made it.
+    """
+
+    def __init__(self, connection: Connection, statement: ast.Statement, count: int) -> None:
+        self._connection = connection
+        self._statement = statement
+        self.param_count = count
+
+    def execute(self, params: Sequence[object] = ()) -> Result:
+        self._connection._db._require_open()
+        return self._connection._execute(self._statement, self.param_count, params)

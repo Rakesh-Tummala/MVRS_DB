@@ -92,6 +92,7 @@ The C: drive is nearly full. Nothing from this project may be written to C:.
 * **Aggregates and joins done (2026-10-11):** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `GROUP BY`, and joins with aliases and qualified names; outer joins and chains of three or more tables were added 2026-10-12. See `docs/12-aggregates-and-joins.md`.
 * **Delta log records done (2026-10-11):** page changes are logged as the bytes that changed; see `docs/05-wal-and-recovery.md` and D-056 to D-059. The log shrank up to 24 times, but commit speed did not change.
 * **Group commit done (2026-10-12):** commits that overlap share an `fsync`; see `docs/05-wal-and-recovery.md` and D-060 to D-063.
+* **Parameters done (2026-10-12):** `?` placeholders, `execute(sql, params)` and `Connection.prepare()`; see `docs/06-sql-grammar.md` (Parameters) and D-071.
 * **All five follow-ups finished and pushed (asked 2026-10-12, done in order, each tested and committed):** 1 group commit (done), 2 in-place B+ tree node edits (done), 3 persistent vector index (done), 4 outer joins and joins of three or more tables (done), 5 MVCC (done: page-level snapshot isolation, `isolation="snapshot"`; see `docs/13-snapshot-isolation.md`).
 * **How I like work delivered:** in parts, stopping after each part for my go-ahead, and asking before each push.
 * **Not built:** `CROSS`/`NATURAL`/`USING` joins, reordering of chains with outer joins, `HAVING`, row-level MVCC, B+ tree rebalancing on delete, a vector index stored in pages. See `docs/LIMITATIONS.md`.

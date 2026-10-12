@@ -155,3 +155,22 @@ UPDATE users SET score = 7 WHERE id = 2;
 DELETE FROM users WHERE score IS NULL;
 EXPLAIN SELECT * FROM users WHERE id = 1;
 ```
+
+## Parameters
+
+A `?` stands for a value that is supplied separately:
+
+```python
+db.execute("SELECT name FROM users WHERE id = ? AND city = ?", (7, "pune"))
+db.execute("INSERT INTO users VALUES (?, ?, ?)", (8, "o'brien", None))
+find = conn.prepare("SELECT name FROM users WHERE id = ?")  # parsed once
+find.execute((7,))
+find.execute((9,))
+```
+
+* **Where:** anywhere a literal can be: `INSERT` values, `SET` values, the operands of a comparison in `WHERE`, `LIMIT`, and a vector after `<->` or `<=>` (the whole vector, or its elements: `[?, ?]`). Not for names: a table or column cannot be a parameter.
+* **Numbering:** by position, in the order the `?`s are written. The number of parameters must equal the number of `?`s, or `ParameterError` is raised before anything runs.
+* **Python values:** `None` is NULL; `int` must fit 64 bits; `float` must be finite; `str`; a list or tuple of numbers is a vector. A `bool`, `bytes`, `NaN`, `inf` and anything else are refused with `ParameterError`, the same rule as for a literal.
+* **Safety:** a parameter is never turned back into SQL text, so a value such as `x'); DROP TABLE t; --` is just a string. There is nothing to escape.
+* **Speed:** the statement is parsed once and the parse is cached by its text (256 statements, each at most 4,096 characters, least recently used out), so `db.execute(sql, params)` and `prepare()` both skip parsing on repeats. Planning still happens on every run.
+* `parse()` (the plain parser) refuses a statement with `?`; `parse_template()` returns the tree with `Param` nodes and their count, and `sql/binding.py: bind()` fills them in.

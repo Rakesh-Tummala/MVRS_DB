@@ -8,7 +8,7 @@ with mvrs_db.connect("example.mvrs") as db:
     print(db.execute("SELECT * FROM users").rows)
 """
 
-from mvrs_db.database import Connection, Database, IntegrityReport
+from mvrs_db.database import Connection, Database, IntegrityReport, PreparedStatement
 from mvrs_db.errors import MvrsDbError
 from mvrs_db.execution.executor import Result
 
@@ -18,6 +18,7 @@ connect = Database.open
 
 __all__ = [
     "Connection",
+    "PreparedStatement",
     "Database",
     "IntegrityReport",
     "MvrsDbError",

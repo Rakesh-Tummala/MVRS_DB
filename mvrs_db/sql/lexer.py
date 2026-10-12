@@ -58,8 +58,8 @@ UNSUPPORTED_KEYWORDS = frozenset(
 _THREE_CHAR_SYMBOLS = ("<->", "<=>")
 _TWO_CHAR_SYMBOLS = ("<=", ">=", "!=", "<>")
 # "." joins a table name or alias to a column name: orders.total.
-# "[" and "]" delimit vector literals: [0.1, 0.2, 0.3].
-_ONE_CHAR_SYMBOLS = "(),;*=<>+-.[]"
+# "[" and "]" delimit vector literals: [0.1, 0.2, 0.3]. "?" is a parameter placeholder.
+_ONE_CHAR_SYMBOLS = "(),;*=<>+-.[]?"
 _IDENT_START = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_")
 _IDENT_PART = _IDENT_START | frozenset("0123456789")
 _DIGITS = frozenset("0123456789")

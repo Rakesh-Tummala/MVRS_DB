@@ -39,8 +39,24 @@ _AGGREGATES = frozenset({"COUNT", "SUM", "AVG", "MIN", "MAX"})
 
 
 def parse(text: str) -> ast.Statement:
-    """Parse exactly one statement."""
-    return _Parser(text).statement()
+    """Parse exactly one statement that has no `?` placeholders."""
+    statement, count = parse_template(text)
+    if count:
+        raise SqlSyntaxError(
+            f"the statement has {count} `?` placeholder(s); pass the values as parameters"
+        )
+    return statement
+
+
+def parse_template(text: str) -> tuple[ast.Statement, int]:
+    """Parse one statement that may contain `?` placeholders; also return how many.
+
+    Placeholders become `ast.Param` nodes in the tree, so the result must go
+    through sql.binding.bind() before it is planned.
+    """
+    parser = _Parser(text)
+    statement = parser.statement()
+    return statement, parser.params
 
 
 class _Parser:
@@ -49,6 +65,7 @@ class _Parser:
         self._tokens = tokenize(text)
         self._index = 0
         self._depth = 0
+        self.params = 0  # `?` placeholders seen so far
 
     # ------------------------------------------------------------------ token helpers
 
@@ -256,12 +273,17 @@ class _Parser:
         limit: int | None = None
         if self._accept_keyword("LIMIT"):
             token = self._current
-            if token.kind is not TokenKind.INTEGER:
-                raise self._error("a non-negative integer after LIMIT")
-            self._index += 1
-            limit = int(token.value)
-            if limit > _INT64_MAX:
-                raise SqlSyntaxError("LIMIT is too large")
+            if self._is_symbol("?"):
+                self._index += 1
+                self.params += 1
+                limit = ast.Param(self.params - 1)  # type: ignore[assignment]
+            elif token.kind is not TokenKind.INTEGER:
+                raise self._error("a non-negative integer or ? after LIMIT")
+            else:
+                self._index += 1
+                limit = int(token.value)
+                if limit > _INT64_MAX:
+                    raise SqlSyntaxError("LIMIT is too large")
         return ast.Select(
             table, columns, where, tuple(order_by), limit, tuple(group_by), alias, tuple(joins)
         )
@@ -332,8 +354,10 @@ class _Parser:
         if not self._is_symbol("<->", "<=>"):
             return column
         operator = self._advance().value
+        if self._is_symbol("?"):
+            return ast.Distance(column, operator, self._literal())  # type: ignore[arg-type]
         if not self._is_symbol("["):
-            raise self._error("a vector such as [0.1, 0.2, 0.3]")
+            raise self._error("a vector such as [0.1, 0.2, 0.3] or ?")
         return ast.Distance(column, operator, self._vector())
 
     def _order_item(self) -> ast.OrderItem:
@@ -447,6 +471,11 @@ class _Parser:
         while True:
             token = self._current
             value = self._literal()
+            if isinstance(value, ast.Param):
+                elements.append(value)
+                if not self._accept_symbol(","):
+                    break
+                continue
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 where = describe_position(self._text, token.position)
                 raise SqlSyntaxError(f"a vector may contain only numbers, at {where}")
@@ -458,6 +487,11 @@ class _Parser:
 
     def _literal(self) -> ast.Value:
         token = self._current
+        if token.kind is TokenKind.SYMBOL and token.value == "?":
+            self._index += 1
+            self.params += 1
+            # A template node: bind() replaces it before anything else sees the tree.
+            return ast.Param(self.params - 1)  # type: ignore[return-value]
         if token.kind is TokenKind.SYMBOL and token.value == "[":
             return self._vector()
         if token.kind is TokenKind.STRING:

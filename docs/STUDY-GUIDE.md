@@ -134,6 +134,12 @@ Topics 14 to 20 were added after the first thirteen. Each of their design docs e
 * Why is a chain with an outer join not reordered, and how is an all-inner chain ordered?
 * How was the join code tested against a reference, and which deliberate bugs did that catch?
 
+### Parameters
+* Why can a bound parameter not be an injection, when a quoted string can?
+* Why is `Param` a tree node bound afterwards, not a token substituted before parsing?
+* What is cached, what is not, and why are plans not cached?
+* Why is `prepare()` no faster than `execute(sql, params)` here?
+
 ### Snapshot isolation
 * Where is a page's content as of an old snapshot, in each of the three cases?
 * Why can a reader never copy a page the writer is half way through editing?

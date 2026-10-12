@@ -191,6 +191,10 @@ class SqlSyntaxError(SqlError):
     """The statement is not valid in MVRS_DB's SQL subset."""
 
 
+class ParameterError(SqlError):
+    """The parameters given do not fit the statement's `?` placeholders."""
+
+
 class QueryTooLargeError(SqlError):
     """The statement text exceeds the size limit."""
 
