@@ -21,10 +21,11 @@ from typing import Any
 from mvrs_db import config
 from mvrs_db.catalog.catalog import Table
 from mvrs_db.catalog.schema import TableSchema
-from mvrs_db.errors import KeyTooLargeError
+from mvrs_db.errors import InvalidValueError, KeyTooLargeError
 from mvrs_db.execution import expressions, params
 from mvrs_db.execution.expressions import Predicate, Row, format_value
-from mvrs_db.index.keys import decode_key, encode_key
+from mvrs_db.index.btree import BTree
+from mvrs_db.index.keys import RID_MAX, encode_key, secondary_prefix
 from mvrs_db.sql import ast
 from mvrs_db.sql.binding import bind_expr, limit_value
 from mvrs_db.storage.heap_file import RecordId
@@ -140,6 +141,9 @@ class IndexScan(Operator):
         tree = self.table.indexes[self.column]
         heap = self.table.heap
         key_range = self.key_range
+        if not self.table.is_unique(self.column):
+            yield from self._secondary_rows(tree, key_range)
+            return
         if isinstance(key_range.low, ast.Param):
             # A point lookup whose value arrives with the execution. Mirror what
             # the planner does for a literal: NULL equals nothing, and a value that
@@ -164,6 +168,40 @@ class IndexScan(Operator):
             high,
             low_inclusive=key_range.low_inclusive,
             high_inclusive=key_range.high_inclusive,
+        ):
+            yield rid, decode_record(types, heap.read(rid))
+
+    def _secondary_rows(self, tree: BTree, key_range: KeyRange) -> Iterator[Entry]:
+        """Scan a secondary index. Its keys are (value, record ID), so a value is a run of keys.
+
+        Every key with value v lies between prefix(v) and prefix(v) + FF*6, so
+        `>= v` starts at prefix(v), `> v` starts just past the run, `<= v` ends at
+        the end of the run and `< v` ends just before it. A value that cannot be a
+        key (too long) means the range cannot be expressed; the whole index is then
+        read and the Filter above decides, as it does for every index scan.
+        """
+        table = self.table
+        types = table.schema.column_types
+        column_type = table.schema.columns[self.column].type
+        low = high = None
+        low_inclusive = high_inclusive = True
+        try:
+            if key_range.low is not None:
+                prefix = secondary_prefix(column_type, key_range.low)
+                low, low_inclusive = (
+                    (prefix, True) if key_range.low_inclusive else (prefix + RID_MAX, False)
+                )
+            if key_range.high is not None:
+                prefix = secondary_prefix(column_type, key_range.high)
+                high, high_inclusive = (
+                    (prefix + RID_MAX, True) if key_range.high_inclusive else (prefix, False)
+                )
+        except (KeyTooLargeError, InvalidValueError):
+            low = high = None
+            low_inclusive = high_inclusive = True
+        heap = table.heap
+        for _key, rid in tree.scan(
+            low, high, low_inclusive=low_inclusive, high_inclusive=high_inclusive
         ):
             yield rid, decode_record(types, heap.read(rid))
 
@@ -865,8 +903,7 @@ class MetadataAggregate(Operator):
                 continue
             tree = table.indexes[spec.position]
             key = tree.first_key() if spec.function == "MIN" else tree.last_key()
-            column_type = table.schema.columns[spec.position].type
-            values.append(None if key is None else decode_key(column_type, key))
+            values.append(None if key is None else table.index_value(spec.position, key))
         yield _NO_RECORD, tuple(values)
 
     def describe(self) -> str:

@@ -20,16 +20,26 @@ from mvrs_db.catalog.schema import Column, TableSchema
 from mvrs_db.errors import (
     CatalogError,
     CorruptCatalogError,
+    InvalidValueError,
+    KeyTooLargeError,
     RecordTooLargeError,
     TableExistsError,
     TableNotFoundError,
 )
 from mvrs_db.index.btree import BTree
+from mvrs_db.index.keys import (
+    RID_MAX,
+    decode_key,
+    decode_secondary_value,
+    encode_key,
+    secondary_key,
+    secondary_prefix,
+)
 from mvrs_db.sql import ast
 from mvrs_db.storage import heap_page
 from mvrs_db.storage.buffer_pool import PagePool
 from mvrs_db.storage.heap_file import HeapFile, RecordId
-from mvrs_db.storage.record import ColumnType, Value, raw_vector
+from mvrs_db.storage.record import ColumnType, Value, decode_record, raw_vector
 from mvrs_db.vector.hnsw import HnswIndex
 
 # Rebuild an in-memory vector index once this share of its entries are deleted.
@@ -57,6 +67,44 @@ class Table:
     _ann_changed: bool = False
     # Where saved copies of the indexes live; None for tables with no store.
     _store: AnnStore | None = field(default=None, repr=False)
+
+    # ------------------------------------------------------------------ B+ tree indexes
+
+    def is_unique(self, position: int) -> bool:
+        """True if the column has a primary-key or UNIQUE index (one entry per value)."""
+        return position in self.indexes and not self.schema.columns[position].secondary
+
+    def index_key(self, position: int, value: Value, rid: RecordId) -> bytes:
+        """The key under which this row's value is filed in the column's index.
+
+        A unique index files the value alone; a secondary index appends the record
+        ID so that equal values get different keys (see index/keys.py).
+        """
+        column_type = self.schema.columns[position].type
+        if self.schema.columns[position].secondary:
+            return secondary_key(column_type, value, rid.page_id, rid.slot)
+        return encode_key(column_type, value)
+
+    def index_value(self, position: int, key: bytes) -> Value:
+        """The column value an index key holds (for MIN/MAX and statistics)."""
+        column_type = self.schema.columns[position].type
+        if self.schema.columns[position].secondary:
+            return decode_secondary_value(column_type, key)
+        return decode_key(column_type, key)
+
+    def count_equal(self, position: int, value: Value, cap: int) -> int:
+        """How many rows a secondary index holds for `value`, counting no further than `cap`."""
+        column_type = self.schema.columns[position].type
+        try:
+            prefix = secondary_prefix(column_type, value)
+        except (InvalidValueError, KeyTooLargeError):
+            return 0
+        found = 0
+        for _key in self.indexes[position].scan(prefix, prefix + RID_MAX):
+            found += 1
+            if found >= cap:
+                break
+        return found
 
     def ann_index(self, position: int) -> HnswIndex:
         """The HNSW index on a vector column, building it from the table if needed.
@@ -340,6 +388,86 @@ class Catalog:
             self._next_table_id += 1
             self.epoch += 1
             return table
+
+    # ------------------------------------------------------------------ indexes
+
+    def index_owner(self, name: str) -> tuple[Table, int]:
+        """The table and column position of the secondary index called `name`."""
+        with self._lock:
+            for table in self._tables.values():
+                for position, column in enumerate(table.schema.columns):
+                    if column.index_name == name:
+                        return table, position
+        raise CatalogError(f"no such index: {name}")
+
+    def _replace_table(self, old: Table, schema: TableSchema) -> Table:
+        """Store a changed definition of `old` and swap in a Table object for it."""
+        rid = self.heap.update(old.catalog_rid, schema.encode())
+        table = self._open_table(schema, rid)
+        table.row_count = old.row_count
+        table._ann = old._ann  # in-memory vector indexes describe rows, not definitions
+        table._ann_changed = old._ann_changed
+        self._tables[schema.name] = table
+        self.epoch += 1
+        return table
+
+    def create_index(self, statement: ast.CreateIndex) -> Table:
+        """Build a secondary index over the table's existing rows.
+
+        The index is a new B+ tree filled from a scan of the heap, all inside the
+        statement's transaction, so a failure (or ROLLBACK) removes it again. A
+        transaction cannot change more pages than the buffer pool holds, which
+        bounds the size of table an index can be built on in one go.
+        """
+        with self._lock:
+            table = self.get(statement.table)
+            schema = table.schema
+            position = schema.column_index(statement.column)
+            if position is None:
+                raise CatalogError(f"table {schema.name} has no column named {statement.column}")
+            column = schema.columns[position]
+            if column.type is ColumnType.VECTOR:
+                raise CatalogError(f"{column.name} is a VECTOR column; use HNSW to index it")
+            if column.indexed:
+                what = "its index" if column.secondary else "a PRIMARY KEY or UNIQUE index"
+                raise CatalogError(f"column {column.name} already has an index: {what}")
+            try:
+                self.index_owner(statement.name)
+            except CatalogError:
+                pass
+            else:
+                raise CatalogError(f"an index named {statement.name} already exists")
+            if len(statement.name.encode("utf-8")) > 255:
+                raise CatalogError("index names are at most 255 bytes")
+
+            root = BTree.create(self._pool)
+            tree = BTree(self._pool, root)
+            types = schema.column_types
+            for rid, record in table.heap.scan():
+                value = decode_record(types, record)[position]
+                if value is not None:
+                    tree.insert(secondary_key(column.type, value, rid.page_id, rid.slot), rid)
+            columns = tuple(
+                replace(c, index_root=root, index_name=statement.name) if i == position else c
+                for i, c in enumerate(schema.columns)
+            )
+            new_schema = replace(schema, columns=columns)
+            if len(new_schema.encode()) > heap_page.max_record_size(self._pool.page_size):
+                raise RecordTooLargeError(
+                    f"the definition of table {schema.name} does not fit in one page"
+                )
+            return self._replace_table(table, new_schema)
+
+    def drop_index(self, name: str) -> None:
+        """Remove a secondary index and free its pages."""
+        with self._lock:
+            table, position = self.index_owner(name)
+            table.indexes[position].drop()
+            columns = tuple(
+                replace(c, index_root=0, index_name="") if i == position else c
+                for i, c in enumerate(table.schema.columns)
+            )
+            self._replace_table(table, replace(table.schema, columns=columns))
 
     def drop_table(self, name: str) -> None:
         """Free every page of the table and its indexes, and forget its definition."""

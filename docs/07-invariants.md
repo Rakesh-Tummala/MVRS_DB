@@ -67,7 +67,7 @@ Each node page must also satisfy N1–N3 (see `09-btree.md`): its pointers fit b
 | C1 | Table names are unique |
 | C2 | Every record in a table decodes against that table's schema |
 | C3 | Every live record with a non-NULL indexed column has exactly one entry in that index, and every index entry points at such a record |
-| C4 | No two live records share a primary-key or unique value |
+| C4 | No two live records share a primary-key or unique value (not required of a secondary index, which keys each entry by value plus record ID) |
 
 ## Log and recovery (Phase 4)
 

@@ -16,7 +16,7 @@ Anything not derivable from this grammar is rejected with a parse error that nam
 ## Grammar
 
 ```
-statement     ::= ( create_table | drop_table | insert | select
+statement     ::= ( create_table | drop_table | create_index | drop_index | insert | select
                   | update | delete | explain | txn_control ) [ ";" ]
 
 create_table  ::= "CREATE" "TABLE" ident "(" column_def { "," column_def } ")"
@@ -27,6 +27,8 @@ constraint    ::= "PRIMARY" "KEY" | "NOT" "NULL" | "UNIQUE"
                 | "HNSW" [ "COSINE" ]            -- VECTOR columns only
 
 drop_table    ::= "DROP" "TABLE" ident
+create_index  ::= "CREATE" "INDEX" ident "ON" ident "(" ident ")"   -- one column, repeated values allowed
+drop_index    ::= "DROP" "INDEX" ident
 
 insert        ::= "INSERT" "INTO" ident [ "(" ident { "," ident } ")" ]
                   "VALUES" row { "," row }

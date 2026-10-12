@@ -145,7 +145,7 @@ CRASH_POINTS = [
 ]
 
 
-@pytest.mark.parametrize("scenario", ["rows", "ddl"])
+@pytest.mark.parametrize("scenario", ["rows", "ddl", "indexed"])
 @pytest.mark.parametrize(("crash_at", "in_flight"), CRASH_POINTS)
 def test_crash_then_recover(
     tmp_path: Path, scenario: str, crash_at: str, in_flight: bool | None
@@ -163,7 +163,7 @@ def test_crash_then_recover(
         db.check()
 
 
-@pytest.mark.parametrize("scenario", ["rows", "ddl"])
+@pytest.mark.parametrize("scenario", ["rows", "ddl", "indexed"])
 def test_crash_while_creating_the_database(tmp_path: Path, scenario: str) -> None:
     """The very first log write of a new database is the catalog itself."""
     path = tmp_path / "crash.mvrs"
@@ -177,7 +177,7 @@ def test_crash_while_creating_the_database(tmp_path: Path, scenario: str) -> Non
         verify(path, scenario).close()
 
 
-@pytest.mark.parametrize("scenario", ["rows", "ddl"])
+@pytest.mark.parametrize("scenario", ["rows", "ddl", "indexed"])
 def test_killed_while_idle_with_nothing_checkpointed(tmp_path: Path, scenario: str) -> None:
     """After commit but before any dirty page is flushed: everything comes from the log."""
     path = tmp_path / "crash.mvrs"
@@ -206,7 +206,7 @@ RECOVERY_CRASH_POINTS = [
 ]
 
 
-@pytest.mark.parametrize("scenario", ["rows", "ddl"])
+@pytest.mark.parametrize("scenario", ["rows", "ddl", "indexed"])
 @pytest.mark.parametrize("crash_at", RECOVERY_CRASH_POINTS)
 def test_crash_during_recovery_then_recover_again(
     tmp_path: Path, scenario: str, crash_at: str
@@ -239,7 +239,7 @@ def test_recovering_twice_changes_nothing(tmp_path: Path) -> None:
     assert path.read_bytes() == first
 
 
-@pytest.mark.parametrize("scenario", ["rows", "ddl"])
+@pytest.mark.parametrize("scenario", ["rows", "ddl", "indexed"])
 def test_truncated_log_tail(tmp_path: Path, scenario: str) -> None:
     """Cut the log at many points. Recovery must keep a whole number of transactions."""
     path = tmp_path / "crash.mvrs"
@@ -268,7 +268,7 @@ def test_truncated_log_tail(tmp_path: Path, scenario: str) -> None:
     assert TRANSACTIONS not in seen  # every cut removed at least the last commit record
 
 
-@pytest.mark.parametrize("scenario", ["rows", "ddl"])
+@pytest.mark.parametrize("scenario", ["rows", "ddl", "indexed"])
 def test_corrupted_log_tail(tmp_path: Path, scenario: str) -> None:
     """Damage a byte in each of the last few records. Earlier transactions must survive."""
     path = tmp_path / "crash.mvrs"

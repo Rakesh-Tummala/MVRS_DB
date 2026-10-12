@@ -66,7 +66,6 @@ from mvrs_db.errors import (
     TransactionTooLargeError,
 )
 from mvrs_db.execution.executor import Executor, Result
-from mvrs_db.index.keys import encode_key
 from mvrs_db.recovery.delta import changed_ranges, delta_size, encode_delta
 from mvrs_db.recovery.recovery_manager import RecoveryStats, recover
 from mvrs_db.recovery.wal import RecordType, WalWriter
@@ -509,7 +508,11 @@ class Database:
                 self._end_snapshot(txn)
             self._pool.begin()
             txn.writing = True
-        self._locks.acquire(txn.txn_id, _table_lock(statement.table), EXCLUSIVE)
+        if isinstance(statement, ast.DropIndex):
+            lock_name = self._catalog.index_owner(statement.name)[0].schema.name
+        else:
+            lock_name = statement.table
+        self._locks.acquire(txn.txn_id, _table_lock(lock_name), EXCLUSIVE)
 
         changes_before = self._pool.change_count
         try:
@@ -521,6 +524,10 @@ class Database:
                 return self._executor.delete(statement, template=template, params=params)
             if isinstance(statement, ast.CreateTable):
                 return self._executor.create_table(statement)
+            if isinstance(statement, ast.CreateIndex):
+                return self._executor.create_index(statement)
+            if isinstance(statement, ast.DropIndex):
+                return self._executor.drop_index(statement)
             return self._executor.drop_table(statement)
         except BaseException:
             txn.must_abort = self._pool.change_count != changes_before
@@ -784,7 +791,7 @@ class Database:
                     value = row[position]
                     if value is None:
                         continue
-                    key = encode_key(column.type, value)
+                    key = table.index_key(position, value, rid)
                     if key in expected:
                         raise CorruptIndexError(f"C4: {label} has a duplicate value {value!r}")
                     expected[key] = rid

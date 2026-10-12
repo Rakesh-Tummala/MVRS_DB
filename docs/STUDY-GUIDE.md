@@ -46,7 +46,9 @@ Run the tests with:
 
 | 21 | Plan cache | `14-plan-cache.md` | `execution/plan_cache.py`, `execution/params.py`; `_reusable`, `_targets` in `execution/executor.py`; `extract_ranges`, `plan_access` in `planner/planner.py` | `integration/test_plan_cache.py` |
 
-Topics 14 to 21 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
+| 22 | Secondary indexes | `15-secondary-indexes.md` | `secondary_*` in `index/keys.py`; `Table.index_key`, `Catalog.create_index` in `catalog/catalog.py`; `IndexScan._secondary_rows` in `execution/operators.py` | `unit/test_secondary_keys.py`, `integration/test_secondary_indexes.py`, `crash_recovery/` (the `indexed` workload) |
+
+Topics 14 to 22 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
 
 ## Questions to be able to answer
 
@@ -135,6 +137,13 @@ Topics 14 to 21 were added after the first thirteen. Each of their design docs e
 * For a RIGHT or FULL hash join, how are the preserved rows that never matched found?
 * Why is a chain with an outer join not reordered, and how is an all-inner chain ordered?
 * How was the join code tested against a reference, and which deliberate bugs did that catch?
+
+### Secondary indexes
+* How does appending the record ID let a tree that stores each key once hold a value many times? How is "all rows with value v" found?
+* Why does TEXT need a terminator and an escape for NUL, and what breaks without them?
+* Why must `UPDATE` touch an index when the indexed value did not change?
+* How does the planner estimate how many rows a value matches without statistics, and why can that not be cached for a `?`?
+* Why can the filter above an index scan hide a wrong index range, and how does the test close the gap?
 
 ### Plan cache
 * How do the values of one execution reach a plan that is shared between executions?

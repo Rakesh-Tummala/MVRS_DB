@@ -23,7 +23,7 @@ from mvrs_db.execution import expressions
 from mvrs_db.execution.operators import Operator, explain
 from mvrs_db.execution.params import bound_values
 from mvrs_db.execution.plan_cache import CachedPlan, PlanCache
-from mvrs_db.index.keys import encode_key
+from mvrs_db.index.keys import encode_key, secondary_prefix
 from mvrs_db.planner.planner import plan_access, plan_select, unqualified_where
 from mvrs_db.sql import ast
 from mvrs_db.storage.heap_file import RecordId
@@ -194,6 +194,14 @@ class Executor:
         self._catalog.drop_table(statement.table)
         return Result()
 
+    def create_index(self, statement: ast.CreateIndex) -> Result:
+        self._catalog.create_index(statement)
+        return Result()
+
+    def drop_index(self, statement: ast.DropIndex) -> Result:
+        self._catalog.drop_index(statement.name)
+        return Result()
+
     # ------------------------------------------------------------------ INSERT
 
     def insert(self, statement: ast.Insert) -> Result:
@@ -231,6 +239,11 @@ class Executor:
             if value is None:
                 continue  # NULLs are not indexed, so UNIQUE allows many of them
             column = schema.columns[position]
+            if column.secondary:
+                # Repeated values are allowed. Check now that this one can be a key,
+                # so a value that is too long fails before the row is stored.
+                secondary_prefix(column.type, value)
+                continue
             key = encode_key(column.type, value)
             if index.get(key) is not None:
                 raise ConstraintViolationError(
@@ -241,6 +254,9 @@ class Executor:
         rid = table.heap.insert(encode_record(schema.column_types, row))
         for position, key in keys:
             table.indexes[position].insert(key, rid)
+        for position, index in table.indexes.items():
+            if schema.columns[position].secondary and row[position] is not None:
+                index.insert(table.index_key(position, row[position], rid), rid)
         table.vector_row_added(rid, row)
         table.rows_changed(1)
         return rid
@@ -306,15 +322,15 @@ class Executor:
                 continue
 
             # Check uniqueness before touching anything.
-            new_keys: dict[int, bytes | None] = {}
             for position, index in table.indexes.items():
                 value = new_row[position]
                 if value is None:
-                    new_keys[position] = None
                     continue
                 column = schema.columns[position]
+                if column.secondary:
+                    secondary_prefix(column.type, value)  # can it be a key at all?
+                    continue
                 key = encode_key(column.type, value)
-                new_keys[position] = key
                 if value != old_row[position]:
                     holder = index.get(key)
                     if holder is not None and holder != rid:
@@ -327,14 +343,13 @@ class Executor:
             table.vector_row_removed(rid)
             table.vector_row_added(new_rid, new_row)
             for position, index in table.indexes.items():
-                old_value = old_row[position]
-                new_key = new_keys[position]
-                if old_value == new_row[position] and new_rid == rid:
+                old_value, new_value = old_row[position], new_row[position]
+                if old_value == new_value and new_rid == rid:
                     continue  # this index entry is still correct
                 if old_value is not None:
-                    index.delete(encode_key(schema.columns[position].type, old_value))
-                if new_key is not None:
-                    index.insert(new_key, new_rid)
+                    index.delete(table.index_key(position, old_value, rid))
+                if new_value is not None:
+                    index.insert(table.index_key(position, new_value, new_rid), new_rid)
         return Result(rowcount=len(targets))
 
     # ------------------------------------------------------------------ DELETE
@@ -347,13 +362,12 @@ class Executor:
         params: Sequence[ast.Value] = (),
     ) -> Result:
         table = self._catalog.get(statement.table)
-        schema = table.schema
         targets = self._targets(table, statement, template, params)
         for rid, row in targets:
             for position, index in table.indexes.items():
                 value = row[position]
                 if value is not None:
-                    index.delete(encode_key(schema.columns[position].type, value))
+                    index.delete(table.index_key(position, value, rid))
             table.heap.delete(rid)
             table.vector_row_removed(rid)
         table.rows_changed(-len(targets))

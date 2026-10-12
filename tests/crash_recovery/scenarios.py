@@ -91,9 +91,68 @@ def ddl_verify(db: mvrs_db.Database, visible: int) -> None:
         assert db.execute(f"SELECT * FROM t{k} ORDER BY id").rows == expected
 
 
+# ---------------------------------------------------------------------- "indexed"
+
+
+def indexed_setup(db: mvrs_db.Database) -> None:
+    db.execute("CREATE TABLE counter (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)")
+    db.execute("INSERT INTO counter VALUES (1, 0)")
+    db.execute("CREATE TABLE data (id INTEGER PRIMARY KEY, grp INTEGER, body TEXT)")
+    db.execute("CREATE INDEX data_grp ON data (grp)")
+
+
+def _group(key: int) -> int:
+    return key % 5
+
+
+def indexed_txn(db: mvrs_db.Database, k: int) -> None:
+    """Rows join, leave and move between groups of a non-unique index, across many pages."""
+    db.execute("BEGIN")
+    for j in range(ROWS_PER_TXN):
+        key = k * 100 + j
+        db.execute(f"INSERT INTO data VALUES ({key}, {_group(key)}, '{_body(k, j)}')")
+    if k >= 2:
+        low = (k - 2) * 100
+        db.execute(f"DELETE FROM data WHERE id >= {low} AND id < {low + 4}")
+    if k >= 1:
+        db.execute(f"UPDATE data SET grp = 9 WHERE id = {(k - 1) * 100 + 5}")
+        db.execute(f"UPDATE data SET body = 'grown {'z' * 600}' WHERE id = {(k - 1) * 100 + 6}")
+    db.execute(f"UPDATE counter SET n = {k + 1} WHERE id = 1")
+    db.execute("COMMIT")
+
+
+def indexed_model(visible: int) -> list[tuple[int, int, str]]:
+    rows: dict[int, tuple[int, int, str]] = {}
+    for k in range(visible):
+        for j in range(ROWS_PER_TXN):
+            key = k * 100 + j
+            rows[key] = (key, _group(key), _body(k, j))
+        if k >= 2:
+            for j in range(4):
+                del rows[(k - 2) * 100 + j]
+        if k >= 1:
+            key = (k - 1) * 100 + 5
+            rows[key] = (key, 9, rows[key][2])
+            key = (k - 1) * 100 + 6
+            rows[key] = (key, rows[key][1], f"grown {'z' * 600}")
+    return [rows[key] for key in sorted(rows)]
+
+
+def indexed_verify(db: mvrs_db.Database, visible: int) -> None:
+    model = indexed_model(visible)
+    assert db.execute("SELECT * FROM data ORDER BY id").rows == model
+    # Through the index, group by group: the index must agree with the rows.
+    for group in (0, 1, 2, 3, 4, 9, 77):
+        want = [(row[0],) for row in model if row[1] == group]
+        got = db.execute(f"SELECT id FROM data WHERE grp = {group} ORDER BY id").rows
+        assert got == want, f"group {group}"
+    assert db.table_names() == ["counter", "data"]
+
+
 SCENARIOS = {
     "rows": (rows_setup, rows_txn, rows_verify),
     "ddl": (ddl_setup, ddl_txn, ddl_verify),
+    "indexed": (indexed_setup, indexed_txn, indexed_verify),
 }
 
 

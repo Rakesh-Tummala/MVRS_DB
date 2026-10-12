@@ -34,6 +34,7 @@ def main() -> None:
         path, buffer_pages=buffer_pages, checkpoint_bytes=checkpoint_bytes, isolation=isolation
     )
     db.execute("CREATE TABLE log (id INTEGER PRIMARY KEY, tid INTEGER, seq INTEGER, pad TEXT)")
+    db.execute("CREATE INDEX log_tid ON log (tid)")  # a secondary index, kept up by every commit
     db.execute("CREATE TABLE counters (tid INTEGER PRIMARY KEY, n INTEGER NOT NULL)")
     for tid in range(threads):
         db.execute(f"INSERT INTO counters VALUES ({tid}, 0)")

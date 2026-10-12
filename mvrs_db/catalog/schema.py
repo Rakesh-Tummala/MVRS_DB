@@ -9,8 +9,12 @@ A catalog record describes one table:
                 [dimension u16]   only when the type is VECTOR
 
 flags: bit 0 = NOT NULL, bit 1 = PRIMARY KEY, bit 2 = UNIQUE,
-       bit 3 = HNSW index for Euclidean distance, bit 4 = HNSW index for cosine.
+       bit 3 = HNSW index for Euclidean distance, bit 4 = HNSW index for cosine,
+       bit 5 = secondary (non-unique) index, created by CREATE INDEX.
 index_root is the root page of the column's B+ tree, or 0 if it has no index.
+A column with bit 5 set is followed, after the dimension if it has one, by
+[name_len u8][name]: the index's name. Records written before secondary indexes
+existed never have the bit and decode unchanged.
 dimension is the n of VECTOR(n). Storing it only for vector columns means
 records written before vectors existed still decode unchanged.
 
@@ -37,6 +41,7 @@ _PRIMARY_KEY = 2
 _UNIQUE = 4
 _HNSW_L2 = 8
 _HNSW_COSINE = 16
+_SECONDARY = 32
 _ANN_FLAG = {"": 0, "l2": _HNSW_L2, "cosine": _HNSW_COSINE}
 
 
@@ -53,10 +58,17 @@ class Column:
     # built for: "l2" or "cosine". Only the declaration is stored; the graph
     # itself lives in memory.
     ann: str = ""
+    # Name of the secondary (non-unique) index on this column, "" if there is none.
+    # A primary-key or UNIQUE column has an index too, but it is not named.
+    index_name: str = ""
 
     @property
     def indexed(self) -> bool:
         return self.index_root != 0
+
+    @property
+    def secondary(self) -> bool:
+        return self.index_name != ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +106,7 @@ class TableSchema:
                 (_NOT_NULL if column.not_null else 0)
                 | (_PRIMARY_KEY if column.primary_key else 0)
                 | (_UNIQUE if column.unique else 0)
+                | (_SECONDARY if column.secondary else 0)
                 | _ANN_FLAG[column.ann]
             )
             parts.append(bytes((len(column_name),)))
@@ -101,6 +114,10 @@ class TableSchema:
             parts.append(_COLUMN_TAIL.pack(int(column.type), flags, column.index_root))
             if column.type is ColumnType.VECTOR:
                 parts.append(_U16.pack(column.dimension))
+            if column.secondary:
+                index_name = column.index_name.encode("utf-8")
+                parts.append(bytes((len(index_name),)))
+                parts.append(index_name)
         return b"".join(parts)
 
     @classmethod
@@ -129,6 +146,17 @@ class TableSchema:
                         raise CorruptCatalogError(
                             f"column {column_name!r} claims {dimension} vector dimensions"
                         )
+                index_name = ""
+                if flags & _SECONDARY:
+                    index_name, position = _read_name(data, position)
+                    if (
+                        not index_root
+                        or flags & (_PRIMARY_KEY | _UNIQUE)
+                        or column_type is ColumnType.VECTOR
+                    ):
+                        raise CorruptCatalogError(
+                            f"column {column_name!r} has an invalid secondary index record"
+                        )
                 columns.append(
                     Column(
                         name=column_name,
@@ -139,6 +167,7 @@ class TableSchema:
                         index_root=index_root,
                         dimension=dimension,
                         ann=_decode_ann(flags, column_type, column_name),
+                        index_name=index_name,
                     )
                 )
         except (struct.error, ValueError, UnicodeDecodeError, IndexError) as exc:

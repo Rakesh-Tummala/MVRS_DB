@@ -140,8 +140,8 @@ class _Parser:
         if token.kind is not TokenKind.KEYWORD:
             raise self._error("a statement")
         handlers: dict[str, Callable[[], ast.Statement]] = {
-            "CREATE": self._create_table,
-            "DROP": self._drop_table,
+            "CREATE": self._create,
+            "DROP": self._drop,
             "INSERT": self._insert,
             "SELECT": self._select,
             "UPDATE": self._update,
@@ -163,6 +163,32 @@ class _Parser:
     def _simple(self, node: ast.Statement) -> ast.Statement:
         self._advance()
         return node
+
+    def _create(self) -> ast.Statement:
+        if self._tokens[self._index + 1].value == "INDEX":
+            return self._create_index()
+        return self._create_table()
+
+    def _create_index(self) -> ast.CreateIndex:
+        self._expect_keyword("CREATE")
+        self._expect_keyword("INDEX")
+        name = self._identifier("index name")
+        self._expect_keyword("ON")
+        table = self._identifier("table name")
+        self._expect_symbol("(")
+        column = self._identifier("column name")
+        if self._is_symbol(","):
+            where = describe_position(self._text, self._current.position)
+            raise SqlSyntaxError(f"an index covers one column, at {where}")
+        self._expect_symbol(")")
+        return ast.CreateIndex(name, table, column)
+
+    def _drop(self) -> ast.Statement:
+        if self._tokens[self._index + 1].value == "INDEX":
+            self._expect_keyword("DROP")
+            self._expect_keyword("INDEX")
+            return ast.DropIndex(self._identifier("index name"))
+        return self._drop_table()
 
     def _create_table(self) -> ast.CreateTable:
         self._expect_keyword("CREATE")

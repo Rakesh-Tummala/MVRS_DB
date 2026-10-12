@@ -71,3 +71,72 @@ def decode_key(column_type: ColumnType, key: bytes) -> int | float | str:
         number: float = _F64.unpack(_U64.pack(bits))[0]
         return number
     return key.decode("utf-8")
+
+
+# ---------------------------------------------------------------------- secondary indexes
+#
+# A primary-key or UNIQUE index maps each value to one row, so the value is the
+# key. A secondary (non-unique) index must hold the same value many times, but
+# the tree stores each key once. The fix is to make the key longer, not the tree
+# smarter: key = (value as above) + (the row's record ID). The key is then unique
+# because the record ID is, and all rows with one value sit next to each other,
+# ordered by record ID, so "every row with value v" is a range scan over
+#   [prefix(v), prefix(v) + FF FF FF FF FF FF]
+# where prefix(v) is the value's encoding and the six bytes are the largest
+# possible record ID.
+#
+# That only works if one value's prefix can never be the beginning of another
+# value's prefix. INTEGER and REAL keys are 8 bytes, so they cannot. TEXT can:
+# "ab" is the start of "abc", and the bytes after "ab" would be mistaken for the
+# start of the next value's text. So TEXT gets a terminator that sorts before any
+# character, and a NUL inside the text is escaped so it cannot be mistaken for
+# it:
+#     NUL  ->  00 FF        end of text  ->  00 00
+# Order is preserved: after a shared prefix, "ab" continues with 00 00 and any
+# longer text continues with a byte that is at least 00 FF (an escaped NUL) or
+# above 00 (any other byte).
+
+RID_SIZE = 6
+_RID = struct.Struct(">IH")
+RID_MAX = b"\xff" * RID_SIZE
+
+
+def secondary_prefix(column_type: ColumnType, value: object) -> bytes:
+    """The value's part of a secondary-index key. It never contains the record ID."""
+    if column_type is not ColumnType.TEXT:
+        return encode_key(column_type, value)
+    if type(value) is not str:
+        raise InvalidValueError(f"{value!r} is not text")
+    try:
+        raw = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise InvalidValueError("text is not valid Unicode") from exc
+    prefix = raw.replace(b"\x00", b"\x00\xff") + b"\x00\x00"
+    if len(prefix) + RID_SIZE > config.MAX_KEY_SIZE:
+        raise KeyTooLargeError(
+            f"text of {len(raw)} bytes does not fit a secondary index key "
+            f"(at most {config.MAX_KEY_SIZE - RID_SIZE - 2} bytes without NUL characters)"
+        )
+    return prefix
+
+
+def secondary_key(column_type: ColumnType, value: object, page_id: int, slot: int) -> bytes:
+    """The full key for one row in a secondary index: value prefix + record ID."""
+    return secondary_prefix(column_type, value) + _RID.pack(page_id, slot)
+
+
+def decode_secondary_value(column_type: ColumnType, key: bytes) -> int | float | str:
+    """The value stored in a secondary-index key (used for MIN/MAX and statistics)."""
+    if column_type is not ColumnType.TEXT:
+        return decode_key(column_type, key[: len(key) - RID_SIZE])
+    out = bytearray()
+    i = 0
+    while True:
+        if key[i] == 0:
+            if key[i + 1] == 0:
+                return out.decode("utf-8")
+            out.append(0)  # an escaped NUL: 00 FF
+            i += 2
+        else:
+            out.append(key[i])
+            i += 1

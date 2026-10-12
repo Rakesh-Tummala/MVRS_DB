@@ -124,7 +124,9 @@ def extract_ranges(table: Table, where: ast.Expr | None) -> tuple[dict[int, KeyR
         if position is None or position not in table.indexes:
             continue
         if isinstance(right.value, ast.Param):
-            if op != "=" or position in bounds:
+            if op != "=" or position in bounds or not table.is_unique(position):
+                # A range, or a repeated-value index, selects a share of the table
+                # that depends on the value.
                 raise PlanNotReusable("the range on an indexed column depends on a parameter")
             point = _Bounds(right.value, right.value)
             bounds[position] = point
@@ -622,7 +624,7 @@ def _plan_join(tables: list[Table], statement: ast.Select) -> tuple[Operator, tu
     totals = [float(max(table.ensure_stats()[0], 1)) for table in tables]
 
     def unique(t: int, position: int) -> bool:
-        return position in tables[t].indexes
+        return tables[t].is_unique(position)
 
     def joined_estimate(
         acc_rows: float, base: int | None, old: int, old_position: int, new: int, new_position: int

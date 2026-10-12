@@ -252,7 +252,7 @@ def test_syntax_errors(text: str, message: str) -> None:
         ("SELECT * FROM t LIMIT 5 OFFSET 2", "OFFSET"),
         ("SELECT a AS b FROM t", "AS"),
         ("ALTER TABLE t ADD c INT", "ALTER"),
-        ("CREATE INDEX i ON t (a)", "INDEX"),
+        ("CREATE VIEW v AS SELECT 1", "VIEW"),
         ("CREATE TABLE t (a INT DEFAULT 1)", "DEFAULT"),
         ("SELECT * FROM t WHERE a = TRUE", "TRUE"),
         ("BEGIN TRANSACTION", "TRANSACTION"),

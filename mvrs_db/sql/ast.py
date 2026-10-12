@@ -94,6 +94,20 @@ class DropTable:
 
 
 @dataclass(frozen=True, slots=True)
+class CreateIndex:
+    """`CREATE INDEX name ON table (column)`: a secondary index that allows repeated values."""
+
+    name: str
+    table: str
+    column: str
+
+
+@dataclass(frozen=True, slots=True)
+class DropIndex:
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
 class Insert:
     table: str
     columns: tuple[str, ...] | None  # None: every column, in table order
@@ -194,6 +208,8 @@ class Rollback:
 Statement = (
     CreateTable
     | DropTable
+    | CreateIndex
+    | DropIndex
     | Insert
     | Select
     | Update

@@ -42,7 +42,6 @@ import math
 
 from mvrs_db.catalog.catalog import Table
 from mvrs_db.execution.operators import KeyRange
-from mvrs_db.index.keys import decode_key
 from mvrs_db.sql import ast
 from mvrs_db.storage.record import ColumnType, Value
 
@@ -71,6 +70,8 @@ VECTOR_ELEMENT = 0.002
 HNSW_FANOUT = 8
 
 DEFAULT_EQUALITY = 0.1
+# How many entries to count when estimating an equality match on a secondary index.
+EQUALITY_PROBE = 64
 DEFAULT_RANGE = 1 / 3
 DEFAULT_NOT_EQUAL = 0.9
 DEFAULT_IS_NULL = 0.1
@@ -118,7 +119,15 @@ def range_selectivity(table: Table, column: int, key_range: KeyRange, rows: int)
     if key_range.is_unbounded:
         return 1.0
     if key_range.is_point:
-        return 1.0 / rows  # the index is unique
+        if table.is_unique(column):
+            return 1.0 / rows
+        # A secondary index can hold a value many times. Count its entries, up to
+        # a cap: an exact answer for rare values, and "at least the cap" for common
+        # ones, which are then assumed to be a default share of the table.
+        matches = table.count_equal(column, key_range.low, EQUALITY_PROBE)
+        if matches < EQUALITY_PROBE:
+            return min(1.0, max(matches, 1) / rows)
+        return min(1.0, max(float(EQUALITY_PROBE), rows * DEFAULT_EQUALITY) / rows)
     low, high = key_range.low, key_range.high
     if low is not None and high is not None and _greater(low, high):
         return 0.0
@@ -130,8 +139,8 @@ def range_selectivity(table: Table, column: int, key_range: KeyRange, rows: int)
     first, last = tree.first_key(), tree.last_key()
     if first is None or last is None:
         return 0.0
-    smallest = float(decode_key(column_type, first))
-    largest = float(decode_key(column_type, last))
+    smallest = float(table.index_value(column, first))  # type: ignore[arg-type]
+    largest = float(table.index_value(column, last))  # type: ignore[arg-type]
     if largest <= smallest:
         return 1.0
     # Only INTEGER and REAL columns reach this point, so the bounds are numbers.
@@ -154,7 +163,7 @@ def default_selectivity(expr: ast.Expr, table: Table, rows: int) -> float:
             for operand in (expr.left, expr.right):
                 if isinstance(operand, ast.ColumnRef):
                     position = table.schema.column_index(operand.name)
-                    if position is not None and position in table.indexes and rows > 0:
+                    if position is not None and table.is_unique(position) and rows > 0:
                         return 1.0 / rows
             return DEFAULT_EQUALITY
         if expr.op == "!=":
