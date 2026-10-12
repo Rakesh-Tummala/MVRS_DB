@@ -237,10 +237,9 @@ class Filter(Operator):
         if predicate is None:
             assert self.template is not None
             expr, schema = self.template
-            bound_expr = bind_expr(expr, params.current())
-            # The same checks the planner makes for a literal, now that the values are known.
-            expressions.check(bound_expr, schema)
-            predicate = expressions.compile_predicate(bound_expr, schema)
+            # The type checks the planner makes for a literal were already made, with the
+            # values, before the plan started (CachedPlan.validate).
+            predicate = expressions.compile_predicate(bind_expr(expr, params.current()), schema)
         for entry in self.children[0].rows():
             if predicate(entry[1]) is True:
                 yield entry
@@ -729,9 +728,13 @@ class IndexJoin(Operator):
         condition: str,
         inner_filter_text: str,
         keep_outer: bool = False,
+        inner_template: tuple[ast.Expr, TableSchema] | None = None,
     ) -> None:
         self.children = (outer,)
         self.keep_outer = keep_outer
+        # Instead of `inner_predicate`, a condition containing `?` placeholders,
+        # bound and compiled each time the join starts (see Filter).
+        self.inner_template = inner_template
         self.inner = inner
         self.outer_key = outer_key
         self.inner_column = inner_column
@@ -747,6 +750,9 @@ class IndexJoin(Operator):
         types = inner.schema.column_types
         heap = inner.heap
         predicate = self.inner_predicate
+        if predicate is None and self.inner_template is not None:
+            expr, schema = self.inner_template
+            predicate = expressions.compile_predicate(bind_expr(expr, params.current()), schema)
         outer_key, outer_is_left = self.outer_key, self.outer_is_left
         keep_outer = self.keep_outer
         nulls: Row = (None,) * len(types)

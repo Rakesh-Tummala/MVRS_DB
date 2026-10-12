@@ -151,6 +151,8 @@ Topics 14 to 22 were added after the first thirteen. Each of their design docs e
 * Why must a cached lookup of `id = 3.0` on an INTEGER key still find row 3?
 * What discards a cached plan, and why is every rollback one of them?
 * Why can two threads run the same cached plan at once?
+* Why must a cached plan type-check its parameters before it runs, and what went wrong when the check lived in each operator?
+* What in a join plan could depend on parameter values, and why does it not?
 
 ### Parameters
 * Why can a bound parameter not be an injection, when a quoted string can?

@@ -93,7 +93,7 @@ The C: drive is nearly full. Nothing from this project may be written to C:.
 * **Delta log records done (2026-10-11):** page changes are logged as the bytes that changed; see `docs/05-wal-and-recovery.md` and D-056 to D-059. The log shrank up to 24 times, but commit speed did not change.
 * **Group commit done (2026-10-12):** commits that overlap share an `fsync`; see `docs/05-wal-and-recovery.md` and D-060 to D-063.
 * **Secondary indexes done (2026-10-12):** `CREATE INDEX` / `DROP INDEX` on one column, repeated values allowed (key = value + record ID); see `docs/15-secondary-indexes.md` and D-073.
-* **Plan cache done (2026-10-12):** plans for single-table `SELECT`/`UPDATE`/`DELETE` are reused when they cannot depend on the parameter values; see `docs/14-plan-cache.md` and D-072.
+* **Plan cache done (2026-10-12):** plans for `SELECT` (joins and aggregates included), `UPDATE` and `DELETE` are reused when they cannot depend on the parameter values; see `docs/14-plan-cache.md`, D-072 and D-074.
 * **Parameters done (2026-10-12):** `?` placeholders, `execute(sql, params)` and `Connection.prepare()`; see `docs/06-sql-grammar.md` (Parameters) and D-071.
 * **All five follow-ups finished and pushed (asked 2026-10-12, done in order, each tested and committed):** 1 group commit (done), 2 in-place B+ tree node edits (done), 3 persistent vector index (done), 4 outer joins and joins of three or more tables (done), 5 MVCC (done: page-level snapshot isolation, `isolation="snapshot"`; see `docs/13-snapshot-isolation.md`).
 * **How I like work delivered:** in parts, stopping after each part for my go-ahead, and asking before each push.

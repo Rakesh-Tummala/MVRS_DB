@@ -40,11 +40,29 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from mvrs_db.catalog.catalog import Catalog, Table
-from mvrs_db.execution.operators import Operator
+from mvrs_db.catalog.schema import TableSchema
+from mvrs_db.execution import expressions
+from mvrs_db.execution.operators import Filter, IndexJoin, Operator
 from mvrs_db.sql import ast
+from mvrs_db.sql.binding import bind_expr
+
+
+def templated_conditions(plan: Operator | None) -> list[tuple[ast.Expr, TableSchema]]:
+    """Every condition in the plan that still has `?` placeholders, with its schema."""
+    found: list[tuple[ast.Expr, TableSchema]] = []
+    stack = [] if plan is None else [plan]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, Filter) and node.template is not None:
+            found.append(node.template)
+        elif isinstance(node, IndexJoin) and node.inner_template is not None:
+            found.append(node.inner_template)
+        stack.extend(node.children)
+    return found
 
 
 @dataclass(slots=True)
@@ -56,7 +74,21 @@ class CachedPlan:
     plan: Operator | None
     names: tuple[str, ...]
     # Each table the plan reads, with its row count when the plan was made.
-    tables: list[tuple[Table, int | None]]
+    tables: Sequence[tuple[Table, int | None]]
+    # The conditions to type-check against each execution's values before it starts.
+    conditions: Sequence[tuple[ast.Expr, TableSchema]] = ()
+
+    def validate(self, values: Sequence[ast.Value]) -> None:
+        """Raise the error planning a literal statement would raise for these values.
+
+        A plan with literals is checked completely before it runs. Here the check
+        has to wait for the values, and it must still happen up front: an operator
+        that never starts (the probe side of a join whose build side is empty, or
+        everything under LIMIT 0) would otherwise never check its condition, and a
+        mistyped parameter would quietly return no rows instead of an error.
+        """
+        for expr, schema in self.conditions:
+            expressions.check(bind_expr(expr, values), schema)
 
     def current(self, template: ast.Statement, catalog: Catalog) -> bool:
         if self.template is not template or self.catalog is not catalog:

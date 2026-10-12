@@ -22,7 +22,7 @@ from mvrs_db.errors import (
 from mvrs_db.execution import expressions
 from mvrs_db.execution.operators import Operator, explain
 from mvrs_db.execution.params import bound_values
-from mvrs_db.execution.plan_cache import CachedPlan, PlanCache
+from mvrs_db.execution.plan_cache import CachedPlan, PlanCache, templated_conditions
 from mvrs_db.index.keys import encode_key, secondary_prefix
 from mvrs_db.planner.planner import plan_access, plan_select, unqualified_where
 from mvrs_db.sql import ast
@@ -103,8 +103,8 @@ class Executor:
         self,
         template: ast.Statement,
         catalog: Catalog,
-        table: str,
-        build: Callable[[Table], tuple[Operator, tuple[str, ...]]],
+        table_names: Sequence[str],
+        build: Callable[[list[Table]], tuple[Operator, tuple[str, ...]]],
     ) -> CachedPlan | None:
         """A plan for this template that can be run with any values, or None.
 
@@ -115,24 +115,30 @@ class Executor:
         """
         entry = self.plans.lookup(template, catalog)
         if entry is None:
-            target = catalog.get(table)
-            rows = target.ensure_stats()[0]
+            targets = [catalog.get(name) for name in table_names]
+            sizes = [(target, target.ensure_stats()[0]) for target in targets]
             try:
-                plan, names = build(target)
+                plan, names = build(targets)
             except PlanNotReusable:
                 entry = CachedPlan(template, catalog, catalog.epoch, None, (), [])
             else:
-                entry = CachedPlan(template, catalog, catalog.epoch, plan, names, [(target, rows)])
+                entry = CachedPlan(
+                    template,
+                    catalog,
+                    catalog.epoch,
+                    plan,
+                    names,
+                    sizes,
+                    templated_conditions(plan),
+                )
             self.plans.store(entry)
         return entry if entry.plan is not None else None
 
     @staticmethod
     def _plain_select(template: ast.Select) -> bool:
-        """One table, no joins, aggregates or vector distances: the kinds of query worth caching."""
-        if template.joins or template.group_by:
-            return False
+        """Anything but vector distances. Those are planned with their own rules each time."""
         items = [*(template.columns or ()), *(order.column for order in template.order_by)]
-        return not any(isinstance(item, (ast.Aggregate, ast.Distance)) for item in items)
+        return not any(isinstance(item, ast.Distance) for item in items)
 
     def select(
         self,
@@ -148,10 +154,13 @@ class Executor:
             entry = self._reusable(
                 template,
                 source,
-                template.table,
-                lambda table: plan_select(table, template, settings or self.vector_settings),
+                [template.table, *(join.table for join in template.joins)],
+                lambda tables: plan_select(
+                    tables[0], template, settings or self.vector_settings, tables[1:]
+                ),
             )
             if entry is not None:
+                entry.validate(params)
                 with bound_values(params):
                     cached_rows = [row for _rid, row in entry.plan.rows()]  # type: ignore[union-attr]
                 return Result(entry.names, cached_rows, len(cached_rows))
@@ -285,10 +294,11 @@ class Executor:
             entry = self._reusable(
                 template,
                 self._catalog,
-                template.table,
-                lambda t: (plan_access(t, unqualified_where(t, template.where))[0], ()),
+                [template.table],
+                lambda t: (plan_access(t[0], unqualified_where(t[0], template.where))[0], ()),
             )
             if entry is not None:
+                entry.validate(params)
                 with bound_values(params):
                     return list(entry.plan.rows())  # type: ignore[union-attr]
         access, _ordered = plan_access(table, unqualified_where(table, statement.where))

@@ -132,14 +132,17 @@ def test_order_by_with_a_limit_parameter_is_not_cached(
     assert spy.selects == 3  # one refused attempt, then each execution planned on its own
 
 
-def test_joins_aggregates_and_vectors_are_planned_each_time(
-    db: mvrs_db.Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    for i in (1, 2, 3):
-        db.execute("SELECT g, COUNT(*) FROM t WHERE id > ? GROUP BY g", (i,))
-        db.execute("SELECT a.id FROM t a JOIN t b ON a.id = b.id WHERE a.id = ?", (i,))
-    assert len(db._executor.plans) == 0  # none of these kinds goes through the cache
-    assert db._executor.plans.misses == 0
+def test_vector_queries_are_planned_each_time(tmp_path: Path) -> None:
+    database = mvrs_db.connect(tmp_path / "vec.mvrs", synchronous=False)
+    try:
+        database.execute("CREATE TABLE d (id INTEGER PRIMARY KEY, v VECTOR(2))")
+        database.execute("INSERT INTO d VALUES (1, [0, 0]), (2, [1, 1])")
+        for i in (1, 2, 3):
+            database.execute("SELECT id FROM d ORDER BY v <-> ? LIMIT ?", ([float(i), 0.0], 1))
+        assert len(database._executor.plans) == 0  # a vector query never enters the cache
+        assert database._executor.plans.misses == 0
+    finally:
+        database.close()
 
 
 # ---------------------------------------------------------------------- equal to planning afresh

@@ -239,6 +239,23 @@ def plan_access(
     return best, best_ordered
 
 
+def _inner_predicate(where: ast.Expr | None, schema: TableSchema) -> expressions.Predicate | None:
+    """The compiled condition an index join checks on each fetched row.
+
+    None if there is no condition, or if it has `?` placeholders and so can only
+    be compiled once the values are known (see _inner_template).
+    """
+    if where is None or has_params(where):
+        return None
+    return expressions.compile_predicate(where, schema)
+
+
+def _inner_template(
+    where: ast.Expr | None, schema: TableSchema
+) -> tuple[ast.Expr, TableSchema] | None:
+    return (where, schema) if where is not None and has_params(where) else None
+
+
 def _limit_rows(limit: int | ast.Param) -> float:
     """Rows a LIMIT lets through, for estimates. A placeholder's value is not known yet."""
     return math.inf if isinstance(limit, ast.Param) else float(limit)
@@ -478,7 +495,7 @@ def _plan_aggregate(
         child = plan
         if limit is not None:
             plan = TopN(child, keys, limit, output_names)
-            plan.est_rows = min(child.est_rows, float(limit))
+            plan.est_rows = min(child.est_rows, _limit_rows(limit))
         else:
             plan = Sort(child, keys, output_names)
             plan.est_rows = child.est_rows
@@ -486,7 +503,7 @@ def _plan_aggregate(
     elif limit is not None:
         child = plan
         plan = Limit(child, limit)
-        plan.est_rows, plan.cost = min(child.est_rows, float(limit)), child.cost
+        plan.est_rows, plan.cost = min(child.est_rows, _limit_rows(limit)), child.cost
 
     child = plan
     plan = Project(child, select_positions, names)
@@ -667,10 +684,12 @@ def _plan_join(tables: list[Table], statement: ast.Select) -> tuple[Operator, tu
             pending.remove(item)
             expressions.check(item[1], schema)
             child = plan
+            templated = has_params(item[1])
             plan = Filter(
                 child,
-                expressions.compile_predicate(item[1], schema),
+                None if templated else expressions.compile_predicate(item[1], schema),
                 expressions.format_expr(item[1]),
+                (item[1], schema) if templated else None,
             )
             plan.cost = child.cost
             # No statistics relate columns of different tables, so this is a flat guess.
@@ -732,14 +751,13 @@ def _plan_join(tables: list[Table], statement: ast.Select) -> tuple[Operator, tu
                     tables[old],
                     new_position,
                     old_position,
-                    None
-                    if inner_where is None
-                    else expressions.compile_predicate(inner_where, tables[old].schema),
+                    _inner_predicate(inner_where, tables[old].schema),
                     outer_is_left=False,
                     condition=condition,
                     inner_filter_text=""
                     if inner_where is None
                     else expressions.format_expr(inner_where),
+                    inner_template=_inner_template(inner_where, tables[old].schema),
                 )
                 best.cost = cost
         # The new table as the looked-up side.
@@ -754,15 +772,14 @@ def _plan_join(tables: list[Table], statement: ast.Select) -> tuple[Operator, tu
                     tables[new],
                     acc_key,
                     new_position,
-                    None
-                    if inner_where is None
-                    else expressions.compile_predicate(inner_where, tables[new].schema),
+                    _inner_predicate(inner_where, tables[new].schema),
                     outer_is_left=True,
                     condition=condition,
                     inner_filter_text=""
                     if inner_where is None
                     else expressions.format_expr(inner_where),
                     keep_outer=kind == "LEFT",
+                    inner_template=_inner_template(inner_where, tables[new].schema),
                 )
                 best.cost = cost
         best.est_rows = estimate_rows
@@ -816,7 +833,7 @@ def _plan_join(tables: list[Table], statement: ast.Select) -> tuple[Operator, tu
         child = plan
         if limit is not None:
             plan = TopN(child, keys, limit, combined.column_names)
-            plan.est_rows = min(child.est_rows, float(limit))
+            plan.est_rows = min(child.est_rows, _limit_rows(limit))
         else:
             plan = Sort(child, keys, combined.column_names)
             plan.est_rows = child.est_rows
@@ -824,7 +841,7 @@ def _plan_join(tables: list[Table], statement: ast.Select) -> tuple[Operator, tu
     elif limit is not None:
         child = plan
         plan = Limit(child, limit)
-        plan.est_rows, plan.cost = min(child.est_rows, float(limit)), child.cost
+        plan.est_rows, plan.cost = min(child.est_rows, _limit_rows(limit)), child.cost
 
     child = plan
     plan = Project(child, items, names)
