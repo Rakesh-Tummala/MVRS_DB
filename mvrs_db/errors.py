@@ -191,6 +191,14 @@ class SqlSyntaxError(SqlError):
     """The statement is not valid in MVRS_DB's SQL subset."""
 
 
+class PlanNotReusable(MvrsDbError):
+    """A plan built for a statement with `?` placeholders would depend on their values.
+
+    Raised while planning and caught by the executor, which then plans each
+    execution separately. Never reaches the user.
+    """
+
+
 class ParameterError(SqlError):
     """The parameters given do not fit the statement's `?` placeholders."""
 

@@ -51,8 +51,8 @@ def _kind(operand: ast.Operand, schema: TableSchema) -> str | None:
         if column_type is ColumnType.VECTOR:
             return _VECTOR
         return _TEXT if column_type is ColumnType.TEXT else _NUMERIC
-    if operand.value is None:
-        return None
+    if operand.value is None or isinstance(operand.value, ast.Param):
+        return None  # NULL fits anything; a placeholder is checked once its value is known
     if isinstance(operand.value, tuple):
         return _VECTOR
     return _TEXT if isinstance(operand.value, str) else _NUMERIC

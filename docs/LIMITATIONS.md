@@ -13,7 +13,7 @@ What MVRS_DB does not do, stated plainly. Each item is a real difference from a 
 | Logging | Undo logging, logical (per-operation) log records, a commit delay or timer for batching | Commits that overlap share an `fsync`, but a lone commit still pays for its own and the engine never waits to collect more. Page changes are logged as deltas where possible, but new pages, the first change to a page after a checkpoint, and changes over half a page are still logged whole. |
 | B+ tree | Merging or rebalancing after deletes, reverse scans | Emptied leaves are reused by later inserts but never freed. `ORDER BY ... DESC` always sorts. |
 | Storage | Records larger than a page, shrinking the file, compression, encryption | |
-| Interface | Network server, cached query plans, named parameters, streaming results | `?` parameters and `prepare()` are supported (parsing is cached, planning is not). Results are returned as a complete list. |
+| Interface | Network server, named parameters, streaming results | `?` parameters and `prepare()` are supported. Parsing is cached, and plans are cached for single-table `SELECT`, `UPDATE` and `DELETE` whose plan does not depend on the values (see `14-plan-cache.md`); joins, aggregates, vector queries and range conditions on an indexed column are planned each time. Results are returned as a complete list. |
 | Vector search | A vector index stored in pages; filtered approximate search | Exact search and an HNSW index both work. The index is saved to a cache file on close and loaded on the next open if the table has not changed; otherwise it is rebuilt from the table on first use (about 2 to 3 ms per row). It must fit in memory, is lost to a crash (rebuilt), is approximate (87% to 97% recall at the default setting on the test datasets), and is bypassed by any `WHERE` clause. See `11-vector-search.md`. |
 
 ## Limits that will surprise you
@@ -47,6 +47,6 @@ The optimiser assumes values are spread evenly between the smallest and largest 
 
 ## Future work, in the order I would do it
 
-1. **Cached query plans**, with invalidation on DDL, rollback and large size changes. Planning is now the larger share of a point query's time.
+1. **Cached plans for joins and aggregates, and for ranges** (plan with real values a few times, then switch to a generic plan if it is not much worse). These are the plans that cost most to build.
 3. **Non-unique secondary indexes**, by appending the record ID to the key.
 4. **ARIES-style logging** (steal, undo, compensation records), which is what unlocks concurrent writers and transactions larger than memory.

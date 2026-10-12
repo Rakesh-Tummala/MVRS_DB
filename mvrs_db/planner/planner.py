@@ -23,14 +23,14 @@ removes any chance of the range extraction changing a query's meaning.
 
 from __future__ import annotations
 
+import math
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
-from mvrs_db import config
 from mvrs_db.catalog.catalog import Table
 from mvrs_db.catalog.schema import TableSchema
-from mvrs_db.errors import InternalError, SqlError, TypeMismatchError
+from mvrs_db.errors import InternalError, PlanNotReusable, SqlError, TypeMismatchError
 from mvrs_db.execution import expressions
 from mvrs_db.execution.operators import (
     AggregateSpec,
@@ -51,6 +51,7 @@ from mvrs_db.execution.operators import (
     TopN,
     VectorIndexScan,
     VectorTopK,
+    index_value,
 )
 from mvrs_db.planner import optimizer
 from mvrs_db.planner.joins import join_order, narrow_kinds, null_supplied
@@ -63,6 +64,7 @@ from mvrs_db.planner.scope import (
     rename_select,
 )
 from mvrs_db.sql import ast
+from mvrs_db.sql.binding import has_params
 from mvrs_db.storage.record import ColumnType, Value
 from mvrs_db.vector import distance
 from mvrs_db.vector.hnsw import SearchSettings
@@ -93,34 +95,21 @@ class _Bounds:
         return KeyRange(self.low, self.high, self.low_inclusive, self.high_inclusive)
 
 
-def _index_value(column_type: ColumnType, value: Value) -> Value:
-    """Convert a literal to the indexed column's type, or None if it cannot be a key.
-
-    Returning None only means "do not use the index for this condition"; the
-    Filter still evaluates the original comparison exactly.
-    """
-    if value is None:
-        return None
-    if column_type is ColumnType.INTEGER:
-        return value if type(value) is int else None
-    if column_type is ColumnType.REAL:
-        if type(value) is float:
-            return value
-        if type(value) is int and float(value) == value:
-            return float(value)
-        return None
-    if type(value) is str and len(value.encode("utf-8", "surrogatepass")) <= config.MAX_KEY_SIZE:
-        return value
-    return None
-
-
 def extract_ranges(table: Table, where: ast.Expr | None) -> tuple[dict[int, KeyRange], set[int]]:
     """Key ranges implied by the WHERE clause, per indexed column.
 
     Also returns the positions (in the list of conjuncts) that became part of a
     range, so their selectivity is not counted twice.
+
+    The WHERE clause may contain `?` placeholders (when a plan is being built for
+    reuse). `column = ?` on an indexed column becomes a point range holding the
+    placeholder, which the index scan fills in when it runs; the index is unique,
+    so such a range always matches at most one row, whatever the value. Any other
+    condition on an indexed column that involves a placeholder would give a range
+    whose size depends on the value, so no reusable plan exists (PlanNotReusable).
     """
     bounds: dict[int, _Bounds] = {}
+    placeholder_columns: set[int] = set()
     used: set[int] = set()
     schema = table.schema
     for number, conjunct in enumerate(expressions.conjuncts(where)):
@@ -134,7 +123,17 @@ def extract_ranges(table: Table, where: ast.Expr | None) -> tuple[dict[int, KeyR
         position = schema.column_index(left.name)
         if position is None or position not in table.indexes:
             continue
-        value = _index_value(schema.columns[position].type, right.value)
+        if isinstance(right.value, ast.Param):
+            if op != "=" or position in bounds:
+                raise PlanNotReusable("the range on an indexed column depends on a parameter")
+            point = _Bounds(right.value, right.value)
+            bounds[position] = point
+            placeholder_columns.add(position)
+            used.add(number)
+            continue
+        if position in placeholder_columns:
+            raise PlanNotReusable("two conditions on an indexed column, one with a parameter")
+        value = index_value(schema.columns[position].type, right.value)
         if value is None:
             continue
         entry = bounds.setdefault(position, _Bounds())
@@ -163,9 +162,13 @@ def plan_access(
     """
     schema = table.schema
     predicate = None
+    # With placeholders the condition cannot be compiled yet: the Filter binds and
+    # compiles it each time it runs.
+    template = has_params(where)
     if where is not None:
         expressions.check(where, schema)
-        predicate = expressions.compile_predicate(where, schema)
+        if not template:
+            predicate = expressions.compile_predicate(where, schema)
 
     rows, pages = table.ensure_stats()
     ranges, used = extract_ranges(table, where)
@@ -221,12 +224,22 @@ def plan_access(
             optimizer.index_scan_cost(needed, height),
         )
 
-    if predicate is not None and where is not None:
-        filtered = Filter(best, predicate, expressions.format_expr(where))
+    if where is not None and (predicate is not None or template):
+        filtered = Filter(
+            best,
+            predicate,
+            expressions.format_expr(where),
+            (where, schema) if template else None,
+        )
         filtered.est_rows = output_rows
         filtered.cost = best.cost
         return filtered, best_ordered
     return best, best_ordered
+
+
+def _limit_rows(limit: int | ast.Param) -> float:
+    """Rows a LIMIT lets through, for estimates. A placeholder's value is not known yet."""
+    return math.inf if isinstance(limit, ast.Param) else float(limit)
 
 
 def _is_aggregate_query(statement: ast.Select) -> bool:
@@ -305,16 +318,22 @@ def _plan_single(
             )
     order_column = keys[0][0] if len(keys) == 1 and not keys[0][1] else None
 
-    plan, ordered = plan_access(
-        table, statement.where, order_column=order_column, limit=statement.limit
-    )
     limit = statement.limit
+    if isinstance(limit, ast.Param) and order_column is not None:
+        # The choice between sorting and walking an index in order depends on the limit.
+        raise PlanNotReusable("the plan depends on the LIMIT parameter")
+    plan, ordered = plan_access(
+        table,
+        statement.where,
+        order_column=order_column,
+        limit=None if isinstance(limit, ast.Param) else limit,
+    )
 
     if keys and not ordered:
         child = plan
         if limit is not None:
             plan = TopN(child, keys, limit, schema.column_names)
-            plan.est_rows = min(child.est_rows, float(limit))
+            plan.est_rows = min(child.est_rows, _limit_rows(limit))
         else:
             plan = Sort(child, keys, schema.column_names)
             plan.est_rows = child.est_rows
@@ -322,7 +341,7 @@ def _plan_single(
     elif limit is not None:
         child = plan
         plan = Limit(child, limit)
-        plan.est_rows = min(child.est_rows, float(limit))
+        plan.est_rows = min(child.est_rows, _limit_rows(limit))
         plan.cost = child.cost
 
     child = plan

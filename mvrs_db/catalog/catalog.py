@@ -150,6 +150,10 @@ class Catalog:
         self._tables: dict[str, Table] = {}
         self._heap: HeapFile | None = None
         self._next_table_id = 1
+        # Changes whenever the set of Table objects changes (a load, CREATE or
+        # DROP). A query plan holds Table objects, so it is valid only for the
+        # epoch it was built in.
+        self.epoch = 0
 
     # ------------------------------------------------------------------ loading
 
@@ -183,6 +187,7 @@ class Catalog:
             self._heap = heap
             self._tables = tables
             self._next_table_id = next_id
+            self.epoch += 1
 
     def view(self, pool: PagePool) -> Catalog:
         """The catalog as `pool` sees it (a SnapshotPool gives the catalog at that commit).
@@ -333,6 +338,7 @@ class Catalog:
                 self._store.discard(schema.table_id)
             self._tables[schema.name] = table
             self._next_table_id += 1
+            self.epoch += 1
             return table
 
     def drop_table(self, name: str) -> None:
@@ -344,5 +350,6 @@ class Catalog:
             table.heap.drop()
             self.heap.delete(table.catalog_rid)
             del self._tables[name]
+            self.epoch += 1
             if self._store is not None:
                 self._store.discard(table.schema.table_id)

@@ -8,17 +8,21 @@ statement is undone by rolling that transaction back.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from mvrs_db.catalog.catalog import Catalog, Table
 from mvrs_db.catalog.schema import Column
 from mvrs_db.errors import (
     ConstraintViolationError,
+    PlanNotReusable,
     SqlError,
     TypeMismatchError,
 )
 from mvrs_db.execution import expressions
 from mvrs_db.execution.operators import Operator, explain
+from mvrs_db.execution.params import bound_values
+from mvrs_db.execution.plan_cache import CachedPlan, PlanCache
 from mvrs_db.index.keys import encode_key
 from mvrs_db.planner.planner import plan_access, plan_select, unqualified_where
 from mvrs_db.sql import ast
@@ -79,6 +83,7 @@ class Executor:
     def __init__(self, catalog: Catalog) -> None:
         self._catalog = catalog
         self.vector_settings = SearchSettings()
+        self.plans = PlanCache()
 
     # ------------------------------------------------------------------ queries
 
@@ -94,12 +99,62 @@ class Executor:
         joined = [source.get(join.table) for join in statement.joins]
         return plan_select(table, statement, settings or self.vector_settings, joined)
 
+    def _reusable(
+        self,
+        template: ast.Statement,
+        catalog: Catalog,
+        table: str,
+        build: Callable[[Table], tuple[Operator, tuple[str, ...]]],
+    ) -> CachedPlan | None:
+        """A plan for this template that can be run with any values, or None.
+
+        Uses the cached one if it is still current; otherwise builds one. None
+        means the planner found the plan would depend on the values (or the
+        statement is of a kind that is not cached), so the caller plans the
+        bound statement as it always has.
+        """
+        entry = self.plans.lookup(template, catalog)
+        if entry is None:
+            target = catalog.get(table)
+            rows = target.ensure_stats()[0]
+            try:
+                plan, names = build(target)
+            except PlanNotReusable:
+                entry = CachedPlan(template, catalog, catalog.epoch, None, (), [])
+            else:
+                entry = CachedPlan(template, catalog, catalog.epoch, plan, names, [(target, rows)])
+            self.plans.store(entry)
+        return entry if entry.plan is not None else None
+
+    @staticmethod
+    def _plain_select(template: ast.Select) -> bool:
+        """One table, no joins, aggregates or vector distances: the kinds of query worth caching."""
+        if template.joins or template.group_by:
+            return False
+        items = [*(template.columns or ()), *(order.column for order in template.order_by)]
+        return not any(isinstance(item, (ast.Aggregate, ast.Distance)) for item in items)
+
     def select(
         self,
         statement: ast.Select,
         catalog: Catalog | None = None,
         settings: SearchSettings | None = None,
+        *,
+        template: ast.Statement | None = None,
+        params: Sequence[ast.Value] = (),
     ) -> Result:
+        if isinstance(template, ast.Select) and self._plain_select(template):
+            source = catalog or self._catalog
+            entry = self._reusable(
+                template,
+                source,
+                template.table,
+                lambda table: plan_select(table, template, settings or self.vector_settings),
+            )
+            if entry is not None:
+                with bound_values(params):
+                    cached_rows = [row for _rid, row in entry.plan.rows()]  # type: ignore[union-attr]
+                return Result(entry.names, cached_rows, len(cached_rows))
         plan, names = self._plan(statement, catalog, settings)
         rows = [row for _rid, row in plan.rows()]
         return Result(names, rows, len(rows))
@@ -202,14 +257,40 @@ class Executor:
             changes[position] = coerce(schema.name, schema.columns[position], value)
         return changes
 
-    def update(self, statement: ast.Update) -> Result:
+    def _targets(
+        self,
+        table: Table,
+        statement: ast.Update | ast.Delete,
+        template: ast.Statement | None,
+        params: Sequence[ast.Value],
+    ) -> list[tuple[RecordId, tuple[Value, ...]]]:
+        """Every row an UPDATE or DELETE applies to, found before anything is changed."""
+        if isinstance(template, (ast.Update, ast.Delete)):
+            entry = self._reusable(
+                template,
+                self._catalog,
+                template.table,
+                lambda t: (plan_access(t, unqualified_where(t, template.where))[0], ()),
+            )
+            if entry is not None:
+                with bound_values(params):
+                    return list(entry.plan.rows())  # type: ignore[union-attr]
+        access, _ordered = plan_access(table, unqualified_where(table, statement.where))
+        return list(access.rows())
+
+    def update(
+        self,
+        statement: ast.Update,
+        *,
+        template: ast.Statement | None = None,
+        params: Sequence[ast.Value] = (),
+    ) -> Result:
         table = self._catalog.get(statement.table)
         schema = table.schema
         changes = self._check_assignments(table, statement)
-        access, _ordered = plan_access(table, unqualified_where(table, statement.where))
         # Find every target first. Updating while scanning could move a row ahead
         # of the scan and update it twice (the "Halloween problem").
-        targets = list(access.rows())
+        targets = self._targets(table, statement, template, params)
         types = schema.column_types
 
         for rid, old_row in targets:
@@ -258,11 +339,16 @@ class Executor:
 
     # ------------------------------------------------------------------ DELETE
 
-    def delete(self, statement: ast.Delete) -> Result:
+    def delete(
+        self,
+        statement: ast.Delete,
+        *,
+        template: ast.Statement | None = None,
+        params: Sequence[ast.Value] = (),
+    ) -> Result:
         table = self._catalog.get(statement.table)
         schema = table.schema
-        access, _ordered = plan_access(table, unqualified_where(table, statement.where))
-        targets = list(access.rows())
+        targets = self._targets(table, statement, template, params)
         for rid, row in targets:
             for position, index in table.indexes.items():
                 value = row[position]

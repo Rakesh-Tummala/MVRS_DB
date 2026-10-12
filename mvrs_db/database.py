@@ -71,7 +71,7 @@ from mvrs_db.recovery.delta import changed_ranges, delta_size, encode_delta
 from mvrs_db.recovery.recovery_manager import RecoveryStats, recover
 from mvrs_db.recovery.wal import RecordType, WalWriter
 from mvrs_db.sql import ast
-from mvrs_db.sql.binding import bind
+from mvrs_db.sql.binding import bind, coerce_params
 from mvrs_db.sql.parser import parse_template
 from mvrs_db.storage.buffer_pool import BufferPool, SnapshotPool
 from mvrs_db.storage.disk_manager import DiskManager
@@ -438,8 +438,19 @@ class Database:
         for name in sorted(tables):
             self._locks.acquire(txn.txn_id, _table_lock(name), SHARED)
 
-    def _run(self, txn: Transaction, statement: ast.Statement) -> Result:
-        """Lock what the statement needs and execute it."""
+    def _run(
+        self,
+        txn: Transaction,
+        statement: ast.Statement,
+        template: ast.Statement | None = None,
+        params: Sequence[ast.Value] = (),
+    ) -> Result:
+        """Lock what the statement needs and execute it.
+
+        `statement` has its values filled in. `template` and `params` are the same
+        statement before binding and the values; the executor uses them to reuse
+        a cached plan.
+        """
         if isinstance(statement, (ast.Begin, ast.Commit, ast.Rollback)):
             raise TransactionError("transaction control is handled by the connection")
         # Once the log cannot be made durable, memory may hold commits that
@@ -452,12 +463,18 @@ class Database:
         if isinstance(statement, ast.Select):
             if self._snapshot_reads and not txn.writing:
                 catalog = self._snapshot_catalog(txn)
-                result = self._executor.select(statement, catalog, self._snapshot_settings())
+                result = self._executor.select(
+                    statement,
+                    catalog,
+                    self._snapshot_settings(),
+                    template=template,
+                    params=params,
+                )
                 self._wait_for_visible_commits()
                 return result
             if not self._snapshot_reads:
                 self._lock_for_reading(txn, statement)
-            result = self._executor.select(statement)
+            result = self._executor.select(statement, template=template, params=params)
             self._wait_for_visible_commits()
             return result
         if isinstance(statement, ast.Explain):
@@ -499,9 +516,9 @@ class Database:
             if isinstance(statement, ast.Insert):
                 return self._executor.insert(statement)
             if isinstance(statement, ast.Update):
-                return self._executor.update(statement)
+                return self._executor.update(statement, template=template, params=params)
             if isinstance(statement, ast.Delete):
-                return self._executor.delete(statement)
+                return self._executor.delete(statement, template=template, params=params)
             if isinstance(statement, ast.CreateTable):
                 return self._executor.create_table(statement)
             return self._executor.drop_table(statement)
@@ -817,7 +834,8 @@ class Connection:
                 f"the statement has {count} `?` placeholder(s) but {len(params)} "
                 f"parameter(s) were given"
             )
-        statement = bind(template, params) if count else template
+        values = coerce_params(params)
+        statement = bind(template, values) if count else template
         db = self._db
         with self._guard:
             if isinstance(statement, ast.Begin):
@@ -835,7 +853,7 @@ class Connection:
             implicit = self._txn is None
             txn = self._txn or db._new_transaction(explicit=False)
             try:
-                result = db._run(txn, statement)
+                result = db._run(txn, statement, template, values)
             except (
                 DeadlockError,
                 LockTimeoutError,

@@ -44,7 +44,9 @@ Run the tests with:
 
 | 20 | Snapshot isolation | `13-snapshot-isolation.md` | `snapshot_page`, `begin_snapshot`, `SnapshotPool` in `storage/buffer_pool.py`; `Catalog.view`; `_snapshot_catalog`, `_run`, `_finish` in `database.py` | `unit/test_snapshots.py`, `concurrency/test_snapshot_isolation.py` |
 
-Topics 14 to 20 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
+| 21 | Plan cache | `14-plan-cache.md` | `execution/plan_cache.py`, `execution/params.py`; `_reusable`, `_targets` in `execution/executor.py`; `extract_ranges`, `plan_access` in `planner/planner.py` | `integration/test_plan_cache.py` |
+
+Topics 14 to 21 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
 
 ## Questions to be able to answer
 
@@ -133,6 +135,13 @@ Topics 14 to 20 were added after the first thirteen. Each of their design docs e
 * For a RIGHT or FULL hash join, how are the preserved rows that never matched found?
 * Why is a chain with an outer join not reordered, and how is an all-inner chain ordered?
 * How was the join code tested against a reference, and which deliberate bugs did that catch?
+
+### Plan cache
+* How do the values of one execution reach a plan that is shared between executions?
+* Which statements can be cached, and how does the planner know? What happens to the others?
+* Why must a cached lookup of `id = 3.0` on an INTEGER key still find row 3?
+* What discards a cached plan, and why is every rollback one of them?
+* Why can two threads run the same cached plan at once?
 
 ### Parameters
 * Why can a bound parameter not be an injection, when a quoted string can?

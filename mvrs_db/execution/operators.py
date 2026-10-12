@@ -18,16 +18,42 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from mvrs_db import config
 from mvrs_db.catalog.catalog import Table
+from mvrs_db.catalog.schema import TableSchema
 from mvrs_db.errors import KeyTooLargeError
+from mvrs_db.execution import expressions, params
 from mvrs_db.execution.expressions import Predicate, Row, format_value
 from mvrs_db.index.keys import decode_key, encode_key
+from mvrs_db.sql import ast
+from mvrs_db.sql.binding import bind_expr, limit_value
 from mvrs_db.storage.heap_file import RecordId
-from mvrs_db.storage.record import Value, decode_record, raw_vector
+from mvrs_db.storage.record import ColumnType, Value, decode_record, raw_vector
 from mvrs_db.vector import distance
 
 Entry = tuple[RecordId, Row]
 SortKey = tuple[int, bool]  # (column position, descending)
+
+
+def index_value(column_type: ColumnType, value: Value) -> Value:
+    """Convert a literal to the indexed column's type, or None if it cannot be a key.
+
+    Returning None only means "do not use the index for this condition"; the
+    Filter still evaluates the original comparison exactly.
+    """
+    if value is None:
+        return None
+    if column_type is ColumnType.INTEGER:
+        return value if type(value) is int else None
+    if column_type is ColumnType.REAL:
+        if type(value) is float:
+            return value
+        if type(value) is int and float(value) == value:
+            return float(value)
+        return None
+    if type(value) is str and len(value.encode("utf-8", "surrogatepass")) <= config.MAX_KEY_SIZE:
+        return value
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +82,8 @@ class KeyRange:
         if self.is_unbounded:
             return "all rows, in key order"
         if self.is_point:
+            if isinstance(self.low, ast.Param):
+                return f"{column} = ?{self.low.index + 1}"
             return f"{column} = {format_value(self.low)}"
         parts = []
         if self.low is not None:
@@ -112,6 +140,17 @@ class IndexScan(Operator):
         tree = self.table.indexes[self.column]
         heap = self.table.heap
         key_range = self.key_range
+        if isinstance(key_range.low, ast.Param):
+            # A point lookup whose value arrives with the execution. Mirror what
+            # the planner does for a literal: NULL equals nothing, and a value that
+            # cannot be a key of this column's type is left to the Filter above, so
+            # the index is walked in full (this is rare: it needs, for example, a
+            # float equal to an integer given for an INTEGER column).
+            value = params.current()[key_range.low.index]
+            if value is None:
+                return
+            key_value = index_value(column_type, value)
+            key_range = KeyRange() if key_value is None else KeyRange(key_value, key_value)
         if key_range.is_point:
             assert key_range.low is not None
             rid = tree.get(encode_key(column_type, key_range.low))
@@ -135,13 +174,35 @@ class IndexScan(Operator):
 
 
 class Filter(Operator):
-    def __init__(self, child: Operator, predicate: Predicate, text: str) -> None:
+    """Keep the rows for which a condition is true.
+
+    Either `predicate` is given, or `template` is: a condition containing `?`
+    placeholders and the schema to check and compile it against. A template is
+    bound to the current execution's values each time rows() starts, so one plan
+    serves every set of parameters.
+    """
+
+    def __init__(
+        self,
+        child: Operator,
+        predicate: Predicate | None,
+        text: str,
+        template: tuple[ast.Expr, TableSchema] | None = None,
+    ) -> None:
         self.children = (child,)
         self.predicate = predicate
         self.text = text
+        self.template = template
 
     def rows(self) -> Iterator[Entry]:
         predicate = self.predicate
+        if predicate is None:
+            assert self.template is not None
+            expr, schema = self.template
+            bound_expr = bind_expr(expr, params.current())
+            # The same checks the planner makes for a literal, now that the values are known.
+            expressions.check(bound_expr, schema)
+            predicate = expressions.compile_predicate(bound_expr, schema)
         for entry in self.children[0].rows():
             if predicate(entry[1]) is True:
                 yield entry
@@ -188,7 +249,7 @@ class TopN(Operator):
     """ORDER BY with LIMIT n: keep only the best n rows instead of sorting everything."""
 
     def __init__(
-        self, child: Operator, keys: list[SortKey], limit: int, names: tuple[str, ...]
+        self, child: Operator, keys: list[SortKey], limit: int | ast.Param, names: tuple[str, ...]
     ) -> None:
         self.children = (child,)
         self.keys = keys
@@ -196,9 +257,10 @@ class TopN(Operator):
         self.names = names
 
     def rows(self) -> Iterator[Entry]:
+        limit = _resolve_limit(self.limit)
         source = self.children[0].rows()
         directions = {descending for _position, descending in self.keys}
-        if self.limit == 0:
+        if limit == 0:
             return
         if len(directions) == 1:
             positions = [position for position, _descending in self.keys]
@@ -209,21 +271,34 @@ class TopN(Operator):
 
             # A heap of size n: O(rows * log n) time and O(n) memory.
             pick = heapq.nlargest if directions.pop() else heapq.nsmallest
-            yield from pick(self.limit, source, key=sort_key)
+            yield from pick(limit, source, key=sort_key)
         else:
-            yield from _sort_entries(list(source), self.keys)[: self.limit]
+            yield from _sort_entries(list(source), self.keys)[:limit]
 
     def describe(self) -> str:
-        return f"TopN({self.limit}; {_describe_keys(self.names, self.keys)})"
+        return f"TopN({_show_limit(self.limit)}; {_describe_keys(self.names, self.keys)})"
+
+
+def _resolve_limit(limit: int | ast.Param) -> int:
+    """The row count of a LIMIT, taking it from the execution's values if it is a `?`."""
+    if isinstance(limit, ast.Param):
+        value = limit_value(limit, params.current())
+        assert value is not None
+        return value
+    return limit
+
+
+def _show_limit(limit: int | ast.Param) -> str:
+    return f"?{limit.index + 1}" if isinstance(limit, ast.Param) else str(limit)
 
 
 class Limit(Operator):
-    def __init__(self, child: Operator, limit: int) -> None:
+    def __init__(self, child: Operator, limit: int | ast.Param) -> None:
         self.children = (child,)
         self.limit = limit
 
     def rows(self) -> Iterator[Entry]:
-        remaining = self.limit
+        remaining = _resolve_limit(self.limit)
         if remaining <= 0:
             return
         for entry in self.children[0].rows():
@@ -233,7 +308,7 @@ class Limit(Operator):
                 return
 
     def describe(self) -> str:
-        return f"Limit({self.limit})"
+        return f"Limit({_show_limit(self.limit)})"
 
 
 @dataclass(frozen=True, slots=True)
