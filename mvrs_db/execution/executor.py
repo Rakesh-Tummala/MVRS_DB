@@ -207,6 +207,10 @@ class Executor:
         self._catalog.create_index(statement)
         return Result()
 
+    def analyze(self, statement: ast.Analyze) -> Result:
+        done = self._catalog.analyze(statement.table)
+        return Result(rowcount=len(done))
+
     def drop_index(self, statement: ast.DropIndex) -> Result:
         self._catalog.drop_index(statement.name)
         return Result()

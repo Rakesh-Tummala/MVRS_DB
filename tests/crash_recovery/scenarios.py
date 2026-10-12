@@ -117,6 +117,8 @@ def indexed_txn(db: mvrs_db.Database, k: int) -> None:
     if k >= 1:
         db.execute(f"UPDATE data SET grp = 9 WHERE id = {(k - 1) * 100 + 5}")
         db.execute(f"UPDATE data SET body = 'grown {'z' * 600}' WHERE id = {(k - 1) * 100 + 6}")
+    if k % 6 == 2:
+        db.execute("ANALYZE data")  # statistics records are rewritten in the same transaction
     db.execute(f"UPDATE counter SET n = {k + 1} WHERE id = 1")
     db.execute("COMMIT")
 

@@ -48,7 +48,9 @@ Run the tests with:
 
 | 22 | Secondary indexes | `15-secondary-indexes.md` | `secondary_*` in `index/keys.py`; `Table.index_key`, `Catalog.create_index` in `catalog/catalog.py`; `IndexScan._secondary_rows` in `execution/operators.py` | `unit/test_secondary_keys.py`, `integration/test_secondary_indexes.py`, `crash_recovery/` (the `indexed` workload) |
 
-Topics 14 to 22 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
+| 23 | Column statistics | `16-statistics.md` | `catalog/stats.py`; `Catalog.analyze` in `catalog/catalog.py`; `range_selectivity`, `default_selectivity` in `planner/optimizer.py`; `joined_estimate`, `_group_estimate` in `planner/planner.py` | `unit/test_column_stats.py`, `integration/test_statistics.py` |
+
+Topics 14 to 23 were added after the first thirteen. Each of their design docs ends with its own "what to be ready to explain" list, which serves as the question list for that topic.
 
 ## Questions to be able to answer
 
@@ -137,6 +139,13 @@ Topics 14 to 22 were added after the first thirteen. Each of their design docs e
 * For a RIGHT or FULL hash join, how are the preserved rows that never matched found?
 * Why is a chain with an outer join not reordered, and how is an all-inner chain ordered?
 * How was the join code tested against a reference, and which deliberate bugs did that catch?
+
+### Column statistics
+* What does an equi-depth histogram do badly, and how does the common-values list make up for it?
+* Why does a `?` get the average share, and what does that make possible and cost?
+* How is a range estimate made from the list and the histogram? What is the join estimate and where does it come from?
+* Why are statistics stored in the catalog heap? What breaks if they are stale?
+* How can the estimates be wrong without any answer being wrong?
 
 ### Secondary indexes
 * How does appending the record ID let a tree that stores each key once hold a value many times? How is "all rows with value v" found?

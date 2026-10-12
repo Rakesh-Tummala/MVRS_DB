@@ -108,6 +108,13 @@ class DropIndex:
 
 
 @dataclass(frozen=True, slots=True)
+class Analyze:
+    """`ANALYZE [table]`: collect column statistics for the planner. None means every table."""
+
+    table: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class Insert:
     table: str
     columns: tuple[str, ...] | None  # None: every column, in table order
@@ -210,6 +217,7 @@ Statement = (
     | DropTable
     | CreateIndex
     | DropIndex
+    | Analyze
     | Insert
     | Select
     | Update

@@ -68,6 +68,7 @@ Each node page must also satisfy N1–N3 (see `09-btree.md`): its pointers fit b
 | C2 | Every record in a table decodes against that table's schema |
 | C3 | Every live record with a non-NULL indexed column has exactly one entry in that index, and every index entry points at such a record |
 | C4 | No two live records share a primary-key or unique value (not required of a secondary index, which keys each entry by value plus record ID) |
+| C5 | Every statistics record names a table and a column that exist, has that column's type, and is the only one for it (checked when the catalog is loaded) |
 
 ## Log and recovery (Phase 4)
 
@@ -115,4 +116,4 @@ Every error class derives from `MvrsDbError` in `errors.py`.
 
 ## Checking everything at once
 
-`Database.check()` (also `mvrs_db check <file>`) verifies, for the whole database: P1–P3 for every page, H1–H6 for every heap, T1–T6, T8 and N1–N3 for every index, C1–C4, A1 and A2. It raises the first violation it finds. Every crash test and both model-based tests end by calling it.
+`Database.check()` (also `mvrs_db check <file>`) verifies, for the whole database: P1–P3 for every page, H1–H6 for every heap, T1–T6, T8 and N1–N3 for every index, C1–C5, A1 and A2. It raises the first violation it finds. Every crash test and both model-based tests end by calling it.

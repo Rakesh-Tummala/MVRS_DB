@@ -142,6 +142,7 @@ class _Parser:
         handlers: dict[str, Callable[[], ast.Statement]] = {
             "CREATE": self._create,
             "DROP": self._drop,
+            "ANALYZE": self._analyze,
             "INSERT": self._insert,
             "SELECT": self._select,
             "UPDATE": self._update,
@@ -182,6 +183,12 @@ class _Parser:
             raise SqlSyntaxError(f"an index covers one column, at {where}")
         self._expect_symbol(")")
         return ast.CreateIndex(name, table, column)
+
+    def _analyze(self) -> ast.Analyze:
+        self._expect_keyword("ANALYZE")
+        if self._current.kind is TokenKind.IDENT:
+            return ast.Analyze(self._identifier("table name"))
+        return ast.Analyze(None)
 
     def _drop(self) -> ast.Statement:
         if self._tokens[self._index + 1].value == "INDEX":

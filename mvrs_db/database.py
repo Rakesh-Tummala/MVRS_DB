@@ -509,10 +509,15 @@ class Database:
             self._pool.begin()
             txn.writing = True
         if isinstance(statement, ast.DropIndex):
-            lock_name = self._catalog.index_owner(statement.name)[0].schema.name
+            lock_names = [self._catalog.index_owner(statement.name)[0].schema.name]
+        elif isinstance(statement, ast.Analyze):
+            lock_names = (
+                [statement.table] if statement.table is not None else self._catalog.table_names()
+            )
         else:
-            lock_name = statement.table
-        self._locks.acquire(txn.txn_id, _table_lock(lock_name), EXCLUSIVE)
+            lock_names = [statement.table]
+        for lock_name in sorted(lock_names):  # one fixed order, so two statements cannot deadlock
+            self._locks.acquire(txn.txn_id, _table_lock(lock_name), EXCLUSIVE)
 
         changes_before = self._pool.change_count
         try:
@@ -528,6 +533,8 @@ class Database:
                 return self._executor.create_index(statement)
             if isinstance(statement, ast.DropIndex):
                 return self._executor.drop_index(statement)
+            if isinstance(statement, ast.Analyze):
+                return self._executor.analyze(statement)
             return self._executor.drop_table(statement)
         except BaseException:
             txn.must_abort = self._pool.change_count != changes_before

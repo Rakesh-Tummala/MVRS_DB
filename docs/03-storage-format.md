@@ -136,7 +136,7 @@ per column: [name_len u8][name][type u8][flags u8][index_root u32]
             [dimension u16]   only when the type is VECTOR
 ```
 
-`flags`: bit 0 `NOT NULL`, bit 1 `PRIMARY KEY`, bit 2 `UNIQUE`, bits 3 and 4 an HNSW index, bit 5 a secondary index (the column entry is then followed by the index's name; see `15-secondary-indexes.md`). `index_root` is the root page of the column's B+ tree, or 0 if the column has no index. It is not the row format, because the catalog has to be readable before any schema is known. On open, the engine reads the whole chain into memory.
+`flags`: bit 0 `NOT NULL`, bit 1 `PRIMARY KEY`, bit 2 `UNIQUE`, bits 3 and 4 an HNSW index, bit 5 a secondary index (the column entry is then followed by the index's name; see `15-secondary-indexes.md`). `index_root` is the root page of the column's B+ tree, or 0 if the column has no index. The catalog heap also holds one record per analysed column, with first byte 2 (`16-statistics.md`); table records start with 1. It is not the row format, because the catalog has to be readable before any schema is known. On open, the engine reads the whole chain into memory.
 
 Creating the catalog is the first logged transaction of a new database, so a crash during creation leaves a file that is simply initialised again on the next open.
 

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 from mvrs_db import config
 from mvrs_db.catalog.ann_store import AnnStore
 from mvrs_db.catalog.schema import Column, TableSchema
+from mvrs_db.catalog.stats import STATS_RECORD_FORMAT, ColumnStats, collect, fit
 from mvrs_db.errors import (
     CatalogError,
     CorruptCatalogError,
@@ -67,6 +68,9 @@ class Table:
     _ann_changed: bool = False
     # Where saved copies of the indexes live; None for tables with no store.
     _store: AnnStore | None = field(default=None, repr=False)
+    # What ANALYZE found out about each column, by column position. Empty until
+    # ANALYZE has run; the planner then falls back to fixed guesses.
+    stats: dict[int, ColumnStats] = field(default_factory=dict, repr=False)
 
     # ------------------------------------------------------------------ B+ tree indexes
 
@@ -198,6 +202,8 @@ class Catalog:
         self._tables: dict[str, Table] = {}
         self._heap: HeapFile | None = None
         self._next_table_id = 1
+        # Where each column's statistics record lives in the catalog heap.
+        self._stats_rids: dict[tuple[int, int], RecordId] = {}
         # Changes whenever the set of Table objects changes (a load, CREATE or
         # DROP). A query plan holds Table objects, so it is valid only for the
         # epoch it was built in.
@@ -219,7 +225,16 @@ class Catalog:
             heap = HeapFile(self._pool, root)
             tables: dict[str, Table] = {}
             next_id = 1
+            stats_found: dict[tuple[int, int], tuple[RecordId, ColumnStats]] = {}
             for rid, record in heap.scan():
+                if record[0] == STATS_RECORD_FORMAT:
+                    table_id, position, column_stats = ColumnStats.decode(record)
+                    if (table_id, position) in stats_found:
+                        raise CorruptCatalogError(
+                            f"C5: column {position} of table {table_id} has two statistics records"
+                        )
+                    stats_found[(table_id, position)] = (rid, column_stats)
+                    continue
                 schema = TableSchema.decode(record)
                 if schema.name in tables:
                     raise CorruptCatalogError(f"C1: table {schema.name!r} is defined twice")
@@ -232,6 +247,22 @@ class Catalog:
                     table._ann = previous._ann
                 tables[schema.name] = table
                 next_id = max(next_id, schema.table_id + 1)
+            by_id = {table.schema.table_id: table for table in tables.values()}
+            for (table_id, position), (_rid, column_stats) in stats_found.items():
+                owner = by_id.get(table_id)
+                if owner is None or position >= len(owner.schema.columns):
+                    raise CorruptCatalogError(
+                        f"C5: statistics for column {position} of table {table_id}, "
+                        f"which does not exist"
+                    )
+                if owner.schema.columns[position].type is not column_stats.column_type:
+                    column_name = owner.schema.columns[position].name
+                    raise CorruptCatalogError(
+                        f"C5: statistics for {owner.schema.name}.{column_name} "
+                        f"have the wrong column type"
+                    )
+                owner.stats[position] = column_stats
+            self._stats_rids = {key: rid for key, (rid, _stats) in stats_found.items()}
             self._heap = heap
             self._tables = tables
             self._next_table_id = next_id
@@ -405,6 +436,7 @@ class Catalog:
         rid = self.heap.update(old.catalog_rid, schema.encode())
         table = self._open_table(schema, rid)
         table.row_count = old.row_count
+        table.stats = old.stats
         table._ann = old._ann  # in-memory vector indexes describe rows, not definitions
         table._ann_changed = old._ann_changed
         self._tables[schema.name] = table
@@ -469,10 +501,58 @@ class Catalog:
             )
             self._replace_table(table, replace(table.schema, columns=columns))
 
+    def analyze(self, name: str | None) -> list[str]:
+        """Collect column statistics for one table, or for all of them. Returns the tables done.
+
+        Each column is counted from a full scan, and its statistics are stored as a
+        record in the catalog heap, replacing the previous one. That makes ANALYZE
+        a transaction like any other: it is logged, it is undone by ROLLBACK, and a
+        crash cannot leave half of it. Vector columns are skipped.
+        """
+        with self._lock:
+            names = [name] if name is not None else self.table_names()
+            limit = heap_page.max_record_size(self._pool.page_size)
+            for table_name in names:
+                table = self.get(table_name)
+                schema = table.schema
+                types = schema.column_types
+                columns: list[list[Value]] = [[] for _ in schema.columns]
+                rows = 0
+                for _rid, record in table.heap.scan():
+                    row = decode_record(types, record)
+                    rows += 1
+                    for position, value in enumerate(row):
+                        if types[position] is not ColumnType.VECTOR:
+                            columns[position].append(value)
+                fresh: dict[int, ColumnStats] = {}
+                for position, column in enumerate(schema.columns):
+                    if column.type is ColumnType.VECTOR:
+                        continue
+                    found = fit(
+                        collect(column.type, columns[position], rows),
+                        schema.table_id,
+                        position,
+                        limit,
+                    )
+                    fresh[position] = found
+                    key = (schema.table_id, position)
+                    record = found.encode(schema.table_id, position)
+                    existing = self._stats_rids.get(key)
+                    if existing is None:
+                        self._stats_rids[key] = self.heap.insert(record)
+                    else:
+                        self._stats_rids[key] = self.heap.update(existing, record)
+                table.stats = fresh
+                table.row_count = rows
+            self.epoch += 1  # plans were made with the old estimates
+            return names
+
     def drop_table(self, name: str) -> None:
         """Free every page of the table and its indexes, and forget its definition."""
         with self._lock:
             table = self.get(name)
+            for key in [key for key in self._stats_rids if key[0] == table.schema.table_id]:
+                self.heap.delete(self._stats_rids.pop(key))
             for index in table.indexes.values():
                 index.drop()
             table.heap.drop()

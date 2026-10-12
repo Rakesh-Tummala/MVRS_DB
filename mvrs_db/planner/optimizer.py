@@ -118,19 +118,34 @@ def range_selectivity(table: Table, column: int, key_range: KeyRange, rows: int)
         return 0.0
     if key_range.is_unbounded:
         return 1.0
+    stats = table.stats.get(column)
     if key_range.is_point:
         if table.is_unique(column):
             return 1.0 / rows
+        if isinstance(key_range.low, ast.Param):
+            # The value is not known until the statement runs, so every value has to
+            # be treated alike: the average share. Without statistics there is no
+            # such average; the planner refuses to build a reusable plan then.
+            average = stats.average_equal_fraction() if stats is not None else DEFAULT_EQUALITY
+            return min(1.0, max(average, 1.0 / rows))
         # A secondary index can hold a value many times. Count its entries, up to
-        # a cap: an exact answer for rare values, and "at least the cap" for common
-        # ones, which are then assumed to be a default share of the table.
+        # a cap: an exact answer for rare values. A value that reaches the cap is
+        # common; its share comes from the statistics if there are any, else it is
+        # assumed to be a default share of the table.
         matches = table.count_equal(column, key_range.low, EQUALITY_PROBE)
         if matches < EQUALITY_PROBE:
             return min(1.0, max(matches, 1) / rows)
+        if stats is not None:
+            return min(1.0, max(stats.equal_fraction(key_range.low), EQUALITY_PROBE / rows))
         return min(1.0, max(float(EQUALITY_PROBE), rows * DEFAULT_EQUALITY) / rows)
     low, high = key_range.low, key_range.high
     if low is not None and high is not None and _greater(low, high):
         return 0.0
+    if stats is not None and stats.rows:
+        fraction = stats.range_fraction(
+            low, key_range.low_inclusive, high, key_range.high_inclusive
+        )
+        return min(1.0, max(fraction, 1.0 / rows))
     column_type = table.schema.columns[column].type
     if column_type is ColumnType.TEXT:
         return DEFAULT_RANGE if (low is None or high is None) else DEFAULT_RANGE**2
@@ -156,9 +171,54 @@ def _greater(a: Value, b: Value) -> bool:
     return a > b  # type: ignore[operator]
 
 
+_FLIPPED = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "=": "=", "!=": "!="}
+
+
+def _column_versus_literal(expr: ast.Compare, table: Table) -> tuple[int, str, Value] | None:
+    """(column position, operator, literal) for `column op literal` or `literal op column`."""
+    left, right, op = expr.left, expr.right, expr.op
+    if isinstance(left, ast.Literal) and isinstance(right, ast.ColumnRef):
+        left, right, op = right, left, _FLIPPED[op]
+    if not (isinstance(left, ast.ColumnRef) and isinstance(right, ast.Literal)):
+        return None
+    position = table.schema.column_index(left.name)
+    return None if position is None else (position, op, right.value)
+
+
+def _from_statistics(expr: ast.Compare, table: Table, rows: int) -> float | None:
+    """Selectivity of a comparison with a literal, from column statistics, if there are any."""
+    found = _column_versus_literal(expr, table)
+    if found is None:
+        return None
+    position, op, value = found
+    stats = table.stats.get(position)
+    if stats is None or not stats.rows or value is None:
+        return None
+    unknown = isinstance(value, ast.Param)  # a `?`: the value arrives when the plan runs
+    if op == "=":
+        equal = stats.average_equal_fraction() if unknown else stats.equal_fraction(value)
+        return max(equal, 1.0 / max(rows, 1))
+    if op == "!=":
+        equal = stats.average_equal_fraction() if unknown else stats.equal_fraction(value)
+        return max(1.0 - stats.null_fraction - equal, 1.0 / max(rows, 1))
+    if unknown:
+        return DEFAULT_RANGE
+    if op in ("<", "<="):
+        fraction = stats.range_fraction(None, True, value, op == "<=")
+    else:
+        fraction = stats.range_fraction(value, op == ">=", None, True)
+    return max(fraction, 1.0 / max(rows, 1))
+
+
 def default_selectivity(expr: ast.Expr, table: Table, rows: int) -> float:
-    """A guess for a condition the index statistics cannot help with."""
+    """The share of rows a condition keeps, from column statistics where there are
+    some and from fixed guesses where there are not."""
     if isinstance(expr, ast.Compare):
+        measured = _from_statistics(expr, table, rows)
+        if measured is not None and not (
+            expr.op == "=" and _is_unique_column(expr, table) and rows > 0
+        ):
+            return measured
         if expr.op == "=":
             for operand in (expr.left, expr.right):
                 if isinstance(operand, ast.ColumnRef):
@@ -170,6 +230,12 @@ def default_selectivity(expr: ast.Expr, table: Table, rows: int) -> float:
             return DEFAULT_NOT_EQUAL
         return DEFAULT_RANGE
     if isinstance(expr, ast.IsNull):
+        if isinstance(expr.operand, ast.ColumnRef):
+            position = table.schema.column_index(expr.operand.name)
+            stats = None if position is None else table.stats.get(position)
+            if stats is not None and stats.rows:
+                share = stats.null_fraction
+                return max(1.0 - share if expr.negated else share, 1.0 / max(rows, 1))
         return 1.0 - DEFAULT_IS_NULL if expr.negated else DEFAULT_IS_NULL
     if isinstance(expr, ast.Not):
         return 1.0 - default_selectivity(expr.operand, table, rows)
@@ -178,3 +244,12 @@ def default_selectivity(expr: ast.Expr, table: Table, rows: int) -> float:
     if isinstance(expr, ast.And):
         return left * right
     return left + right - left * right
+
+
+def _is_unique_column(expr: ast.Compare, table: Table) -> bool:
+    for operand in (expr.left, expr.right):
+        if isinstance(operand, ast.ColumnRef):
+            position = table.schema.column_index(operand.name)
+            if position is not None and table.is_unique(position):
+                return True
+    return False

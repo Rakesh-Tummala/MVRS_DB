@@ -92,6 +92,7 @@ The C: drive is nearly full. Nothing from this project may be written to C:.
 * **Aggregates and joins done (2026-10-11):** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `GROUP BY`, and joins with aliases and qualified names; outer joins and chains of three or more tables were added 2026-10-12. See `docs/12-aggregates-and-joins.md`.
 * **Delta log records done (2026-10-11):** page changes are logged as the bytes that changed; see `docs/05-wal-and-recovery.md` and D-056 to D-059. The log shrank up to 24 times, but commit speed did not change.
 * **Group commit done (2026-10-12):** commits that overlap share an `fsync`; see `docs/05-wal-and-recovery.md` and D-060 to D-063.
+* **Column statistics done (2026-10-12):** `ANALYZE` collects per-column common values and histograms, stored in the catalog heap and used for row estimates, join sizes and group counts; see `docs/16-statistics.md` and D-075.
 * **Secondary indexes done (2026-10-12):** `CREATE INDEX` / `DROP INDEX` on one column, repeated values allowed (key = value + record ID); see `docs/15-secondary-indexes.md` and D-073.
 * **Plan cache done (2026-10-12):** plans for `SELECT` (joins and aggregates included), `UPDATE` and `DELETE` are reused when they cannot depend on the parameter values; see `docs/14-plan-cache.md`, D-072 and D-074.
 * **Parameters done (2026-10-12):** `?` placeholders, `execute(sql, params)` and `Connection.prepare()`; see `docs/06-sql-grammar.md` (Parameters) and D-071.
@@ -99,7 +100,7 @@ The C: drive is nearly full. Nothing from this project may be written to C:.
 * **How I like work delivered:** in parts, stopping after each part for my go-ahead, and asking before each push.
 * **Not built:** `CROSS`/`NATURAL`/`USING` joins, reordering of chains with outer joins, `HAVING`, row-level MVCC, B+ tree rebalancing on delete, a vector index stored in pages. See `docs/LIMITATIONS.md`.
 * **Next for me:** work through `docs/STUDY-GUIDE.md`, then write the case study in my own words.
-* **Docs:** `docs/01` to `docs/15`, `DECISIONS.md`, `LIMITATIONS.md`, `STUDY-GUIDE.md`. Benchmark report: `benchmarks/results/REPORT.md`.
+* **Docs:** `docs/01` to `docs/16`, `DECISIONS.md`, `LIMITATIONS.md`, `STUDY-GUIDE.md`. Benchmark report: `benchmarks/results/REPORT.md`.
 
 ## Commands
 

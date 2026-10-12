@@ -64,7 +64,7 @@ A key length is one byte in the tree node, so a key is at most 255 bytes. A seco
 * **Estimating how many rows match.** A unique equality matches at most one row. A repeated-value equality has no statistics to go on, so the planner counts the entries in the index for that value, up to 64. Under 64 it knows the exact number; at 64 or more it assumes the value is common (a tenth of the table, at least 64). This costs at most 64 key reads at planning time, and it is what makes a rare value use the index and a common one scan.
 * **Ranges** use the existing interpolation between the smallest and largest key, now decoding the value out of the longer key.
 * **`MIN`/`MAX`** with no `WHERE` read the edge of the index, as for a unique one.
-* **Plan cache.** A cached plan cannot depend on the value, but how many rows a value has does. So `col = ?` on a repeated-value index is refused by the planner (`PlanNotReusable`) and planned on each execution, like a range. A primary-key lookup is still cached.
+* **Plan cache.** A cached plan cannot depend on the value, but how many rows a value has does. So `col = ?` on a repeated-value index is refused by the planner (`PlanNotReusable`) and planned on each execution, like a range, until `ANALYZE` has given the column statistics: then every value is given the average share and the plan is reused. A primary-key lookup is always cached.
 * **Joins.** A secondary index is not used for an index join: that operator looks up at most one match per outer row, which only unique indexes guarantee. Joining through a secondary index is a possible extension.
 
 ## How it is tested
@@ -93,7 +93,7 @@ So an index costs roughly 30 microseconds per row per index on insert here, and 
 
 * Composite (multi-column) indexes, unique indexes through `CREATE INDEX` (use `UNIQUE`), partial and expression indexes, `IF NOT EXISTS`.
 * Index joins through a secondary index, and index-only scans.
-* Reusing a plan across values for a repeated-value index (needs per-column value statistics).
+* Reusing a plan across values for a repeated-value index *before* `ANALYZE`. After it, statistics give every value the average share, and such a plan is reused (`16-statistics.md`).
 * Rebuilding an index after many deletes: deleted keys leave empty space, as for the other trees.
 * A `CREATE INDEX` larger than one transaction can hold.
 

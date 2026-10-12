@@ -7,6 +7,7 @@ What MVRS_DB does not do, stated plainly. Each item is a real difference from a 
 | Area | Missing | Notes |
 |---|---|---|
 | SQL | `CROSS`/`NATURAL`/`USING` joins, `HAVING`, subqueries, `DISTINCT`, `OFFSET`, `LIKE`, `IN`, `BETWEEN`, arithmetic, column aliases, views, triggers, foreign keys, `ALTER TABLE`, `CREATE INDEX` | Each is rejected with an error that names it. Inner, `LEFT`, `RIGHT` and `FULL` joins of any number of tables, each on one equality, are supported; a chain with an outer join is not reordered. Aggregates and `GROUP BY` are supported on plain columns only: no `SUM(price * qty)`. |
+| Optimiser | Automatic statistics, sampling, multi-column statistics, histograms for joins | `ANALYZE` collects per-column statistics on request (see `16-statistics.md`); they are not updated by later changes, and conditions on different columns are assumed independent. |
 | Types | Booleans, dates, blobs, decimals | Three types only: `INTEGER`, `REAL`, `TEXT`. |
 | Indexes | Composite keys, partial and expression indexes, index joins through a secondary index | A primary key, `UNIQUE` columns and `CREATE INDEX` columns (one column, repeated values allowed, TEXT up to 247 bytes) are indexed. An index is built in one transaction, so a table of more than about 100,000 rows needs a larger buffer pool. See `15-secondary-indexes.md`. |
 | Concurrency | Concurrent writers, row-level locks, row-level versions, savepoints | One writer at a time; locks are per table. `isolation="snapshot"` gives readers page-level snapshots that never block or wait (see `13-snapshot-isolation.md`), but conflicts are detected per database, the approximate vector index is not used for snapshot reads, and a reader that never ends keeps every page version since it began in memory. |
@@ -28,7 +29,7 @@ What MVRS_DB does not do, stated plainly. Each item is a real difference from a 
 * **`SELECT` without `ORDER BY` returns rows in storage order**, which changes as rows are updated and deleted.
 * **Keywords are reserved.** A column cannot be called `index`, `count`, `sum`, `min`, `max`, `group`, `vector`, `date`, `key`, and so on.
 * **A grouped query keeps every group in memory, and a hash join keeps its smaller input in memory.** There is no spilling to disk.
-* **A join's row estimate is a guess when neither join column is unique**, since there are no column statistics. Join order for an inner chain is chosen greedily from those estimates and can be wrong.
+* **A join's row estimate is a guess when neither join column is unique** and `ANALYZE` has not been run; with it, the estimate uses distinct counts. Join order for an inner chain is chosen greedily from those estimates and can be wrong.
 * **Only one process can open a database**, and only once.
 
 ## Durability caveats
@@ -43,10 +44,10 @@ What MVRS_DB does not do, stated plainly. Each item is a real difference from a 
 
 It is slow. See `benchmarks/results/REPORT.md` for measurements and the list of known bottlenecks. The largest are the cost of an `fsync` per durable commit (shared between overlapping commits, not removed), row-at-a-time execution in Python, and parsing SQL text on every call.
 
-The optimiser assumes values are spread evenly between the smallest and largest key. On skewed data its row estimates, and therefore its choices, can be wrong.
+Without `ANALYZE` the optimiser assumes values are spread evenly between the smallest and largest key. On skewed data its row estimates, and therefore its choices, can be wrong; `ANALYZE` fixes that for the columns it covers until the data changes a lot.
 
 ## Future work, in the order I would do it
 
 1. **Cached plans for ranges and repeated-value indexes** (plan with real values a few times, then switch to a generic plan if it is not much worse), which needs per-column statistics to be safe.
-3. **Per-column value statistics** (distinct counts, histograms). They would let the planner estimate repeated-value indexes without probing, and cache plans for them.
+3. **Automatic `ANALYZE`** (statistics are a snapshot taken on request), sampling for large tables, and multi-column statistics.
 4. **ARIES-style logging** (steal, undo, compensation records), which is what unlocks concurrent writers and transactions larger than memory.

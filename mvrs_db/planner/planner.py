@@ -124,9 +124,11 @@ def extract_ranges(table: Table, where: ast.Expr | None) -> tuple[dict[int, KeyR
         if position is None or position not in table.indexes:
             continue
         if isinstance(right.value, ast.Param):
-            if op != "=" or position in bounds or not table.is_unique(position):
-                # A range, or a repeated-value index, selects a share of the table
-                # that depends on the value.
+            repeated = not table.is_unique(position)
+            if op != "=" or position in bounds or (repeated and position not in table.stats):
+                # A range selects a share of the table that depends on the value, and
+                # so does a repeated-value index unless statistics give the average
+                # share per value (then every value is treated alike).
                 raise PlanNotReusable("the range on an indexed column depends on a parameter")
             point = _Bounds(right.value, right.value)
             bounds[position] = point
@@ -254,6 +256,24 @@ def _inner_template(
     where: ast.Expr | None, schema: TableSchema
 ) -> tuple[ast.Expr, TableSchema] | None:
     return (where, schema) if where is not None and has_params(where) else None
+
+
+def _group_estimate(table: Table | None, group_positions: list[int], input_rows: float) -> float:
+    """How many groups a GROUP BY produces: one with no grouping column, else the number
+    of distinct value combinations (from statistics when every column has them, never more
+    than the input), else the square root of the input as a stand-in."""
+    if not group_positions:
+        return 1.0
+    if table is not None:
+        distinct = 1.0
+        for position in group_positions:
+            stats = table.stats.get(position)
+            if stats is None or not stats.distinct:
+                break
+            distinct *= stats.distinct + (1 if stats.nulls else 0)  # NULLs form a group
+        else:
+            return max(1.0, min(input_rows, distinct))
+    return max(1.0, float(input_rows**0.5))
 
 
 def _limit_rows(limit: int | ast.Param) -> float:
@@ -487,7 +507,7 @@ def _plan_aggregate(
         plan = HashAggregate(child, group_positions, specs, output_names)
         # The number of groups is unknown without column statistics. The square
         # root of the input size is a common stand-in; it only affects EXPLAIN.
-        plan.est_rows = max(1.0, child.est_rows**0.5) if group_positions else 1.0
+        plan.est_rows = _group_estimate(table, group_positions, child.est_rows)
         plan.cost = child.cost + child.est_rows * optimizer.ROW_CPU
 
     limit = statement.limit
@@ -657,6 +677,20 @@ def _plan_join(tables: list[Table], statement: ast.Select) -> tuple[Operator, tu
             return acc_rows * rows[new] / totals[new]
         if base is not None and unique(old, old_position):
             return acc_rows * rows[new] / totals[old]
+        # Neither key is unique. With statistics, each key value occurs about
+        # rows/distinct times on each side, so the join has about
+        # |A|*|B| / max(distinct_A, distinct_B) rows. Without them, a guess.
+        stat_old, stat_new = (
+            tables[old].stats.get(old_position),
+            tables[new].stats.get(new_position),
+        )
+        if (
+            stat_old is not None
+            and stat_new is not None
+            and stat_old.distinct
+            and stat_new.distinct
+        ):
+            return acc_rows * rows[new] / max(stat_old.distinct, stat_new.distinct)
         return min(acc_rows, rows[new])
 
     if count > 2 and all(kind == "INNER" for kind in kinds):
