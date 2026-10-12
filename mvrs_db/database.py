@@ -62,6 +62,7 @@ from mvrs_db.errors import (
     ParameterError,
     SerializationError,
     StorageIOError,
+    TableNotFoundError,
     TransactionError,
     TransactionTooLargeError,
 )
@@ -162,6 +163,7 @@ class Database:
         lock_timeout: float,
         log_deltas: bool,
         snapshot_reads: bool,
+        auto_analyze: bool,
     ) -> None:
         self._path = path
         self._file_lock = file_lock
@@ -178,6 +180,9 @@ class Database:
         # no locks. Catalog views are built per commit number and shared by every
         # reader at that number; _views_lock guards the dictionary.
         self._snapshot_reads = snapshot_reads
+        self._auto_analyze = auto_analyze
+        self._in_auto_analyze = threading.local()
+        self.auto_analyzes = 0  # how many tables have been analysed automatically
         self._views: dict[int, Catalog] = {}
         self._views_lock = threading.Lock()
         # Parsed statements by SQL text. A statement tree is immutable, so one
@@ -213,6 +218,7 @@ class Database:
         lock_timeout: float = config.DEFAULT_LOCK_TIMEOUT_SECONDS,
         log_deltas: bool = True,
         isolation: str = "locking",
+        auto_analyze: bool = True,
     ) -> Database:
         """Open a database, creating it if it does not exist and `create` is true.
 
@@ -228,6 +234,12 @@ class Database:
         isolation="snapshot" is snapshot isolation: a SELECT reads the database as
         of the last commit when it started, takes no locks, and never waits for
         or blocks a writer. See docs/13-snapshot-isolation.md.
+
+        auto_analyze=True (the default) refreshes a table's column statistics by
+        itself once enough of its rows have changed (see docs/16-statistics.md). The
+        refresh runs as its own transaction right after the commit that crossed the
+        threshold, so that one statement pays for it. auto_analyze=False leaves
+        statistics to explicit ANALYZE statements.
         """
         if isolation not in ("locking", "snapshot"):
             raise ValueError(f"isolation must be 'locking' or 'snapshot', not {isolation!r}")
@@ -266,6 +278,7 @@ class Database:
                 lock_timeout=lock_timeout,
                 log_deltas=log_deltas,
                 snapshot_reads=isolation == "snapshot",
+                auto_analyze=auto_analyze,
             )
             database._load_catalog()
             return database
@@ -580,6 +593,7 @@ class Database:
         """
         durable_at: int | None = None
         was_writer = txn.writing
+        touched: list[str] = []
         self._end_snapshot(txn)
         try:
             if txn.writing:
@@ -590,7 +604,7 @@ class Database:
                     except BaseException:
                         self._rollback_pages()
                         raise
-                    self._catalog.transaction_committed()
+                    touched = self._catalog.transaction_committed()
                 else:
                     self._rollback_pages()
         finally:
@@ -599,6 +613,7 @@ class Database:
             self._await_durable(durable_at)
             if was_writer:
                 self._maybe_checkpoint()
+                self._maybe_auto_analyze(touched)
 
     def _await_durable(self, position: int | None) -> None:
         """Wait until the log is durable up to `position` (None: nothing to wait for)."""
@@ -638,6 +653,48 @@ class Database:
         comparison and returns at once.
         """
         self._await_durable(self._wal.next_lsn)
+
+    def _maybe_auto_analyze(self, touched: list[str]) -> None:
+        """Re-collect statistics for tables the commit just changed, if they have gone stale.
+
+        Each table is analysed in its own transaction, started after the committing
+        transaction has released its locks. If the analysis cannot start (another
+        transaction holds the table, the lock times out, the transaction would be
+        too large), it is dropped quietly: the user's statement has already
+        committed, and the table stays stale, so the next commit tries again.
+        """
+        if (
+            not self._auto_analyze
+            or not touched
+            or self._failed is not None
+            or self._closed
+            or getattr(self._in_auto_analyze, "active", False)
+        ):
+            return
+        stale = self._catalog.stale_tables(touched)
+        if not stale:
+            return
+        self._in_auto_analyze.active = True
+        try:
+            for name in stale:
+                txn = self._new_transaction(explicit=False)
+                try:
+                    self._run(txn, ast.Analyze(name))
+                except (
+                    LockTimeoutError,
+                    DeadlockError,
+                    TransactionTooLargeError,
+                    TableNotFoundError,
+                ):
+                    self._finish(txn, commit=False)
+                    continue
+                except BaseException:
+                    self._finish(txn, commit=False)
+                    raise
+                self._finish(txn, commit=True)
+                self.auto_analyzes += 1
+        finally:
+            self._in_auto_analyze.active = False
 
     def _maybe_checkpoint(self) -> None:
         """Checkpoint if the log has grown past its limit. Takes the writer slot."""

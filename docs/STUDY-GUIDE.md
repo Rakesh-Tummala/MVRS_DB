@@ -146,6 +146,8 @@ Topics 14 to 23 were added after the first thirteen. Each of their design docs e
 * How is a range estimate made from the list and the histogram? What is the join estimate and where does it come from?
 * Why are statistics stored in the catalog heap? What breaks if they are stale?
 * How can the estimates be wrong without any answer being wrong?
+* When does the engine re-run ANALYZE by itself, what counts as a change, and why must the count survive a rollback reload?
+* Why does it run after the commit, in its own transaction, and what happens when it cannot get its locks?
 
 ### Secondary indexes
 * How does appending the record ID let a tree that stores each key once hold a value many times? How is "all rows with value v" found?

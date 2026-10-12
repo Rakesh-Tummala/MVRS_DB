@@ -272,6 +272,7 @@ class Executor:
                 index.insert(table.index_key(position, row[position], rid), rid)
         table.vector_row_added(rid, row)
         table.rows_changed(1)
+        self._catalog.note_changes(table, 1)
         return rid
 
     # ------------------------------------------------------------------ UPDATE
@@ -353,6 +354,7 @@ class Executor:
                             f"{schema.name}.{column.name} = {expressions.format_value(value)}"
                         )
 
+            self._catalog.note_changes(table, 1)
             new_rid = table.heap.update(rid, encode_record(types, new_row))
             table.vector_row_removed(rid)
             table.vector_row_added(new_rid, new_row)
@@ -385,4 +387,5 @@ class Executor:
             table.heap.delete(rid)
             table.vector_row_removed(rid)
         table.rows_changed(-len(targets))
+        self._catalog.note_changes(table, len(targets))
         return Result(rowcount=len(targets))

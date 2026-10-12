@@ -151,10 +151,17 @@ def indexed_verify(db: mvrs_db.Database, visible: int) -> None:
     assert db.table_names() == ["counter", "data"]
 
 
+# Scenarios that run with automatic ANALYZE on (all the others have it off, so that their
+# crash points mean the same thing as when they were measured). "autoanalyze" is the
+# "indexed" workload; its transactions change enough rows that statistics are refreshed
+# by the engine several times, each as a transaction of its own.
+AUTO_ANALYZE = {"autoanalyze": True}
+
 SCENARIOS = {
     "rows": (rows_setup, rows_txn, rows_verify),
     "ddl": (ddl_setup, ddl_txn, ddl_verify),
     "indexed": (indexed_setup, indexed_txn, indexed_verify),
+    "autoanalyze": (indexed_setup, indexed_txn, indexed_verify),
 }
 
 

@@ -22,7 +22,8 @@ REAL_FSYNC = os.fsync
 
 @pytest.fixture
 def db(tmp_path: Path) -> Iterator[mvrs_db.Database]:
-    database = mvrs_db.connect(tmp_path / "gc.mvrs", checkpoint_bytes=1 << 40)
+    # auto_analyze=False: these tests count commits, and an automatic ANALYZE is one more
+    database = mvrs_db.connect(tmp_path / "gc.mvrs", checkpoint_bytes=1 << 40, auto_analyze=False)
     database.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, who INTEGER)")
     yield database
     database.close()

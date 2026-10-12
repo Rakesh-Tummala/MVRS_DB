@@ -22,7 +22,9 @@ from mvrs_db.sql.parser import parse
 
 @pytest.fixture
 def db(tmp_path: Path) -> Iterator[mvrs_db.Database]:
-    database = mvrs_db.connect(tmp_path / "sec.mvrs", synchronous=False)
+    # auto_analyze=False: whether a plan with a parameter is cacheable depends on whether the
+    # column has statistics, which these tests want to control with explicit ANALYZE
+    database = mvrs_db.connect(tmp_path / "sec.mvrs", synchronous=False, auto_analyze=False)
     database.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, g INTEGER, name TEXT, score REAL)")
     rows = [
         (i, None if i % 13 == 0 else i % 10, None if i % 17 == 0 else f"n{i % 7}", (i % 5) / 2)

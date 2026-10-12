@@ -37,7 +37,14 @@ def main() -> None:
         os.write(ack_fd, (line + "\n").encode())
         os.fsync(ack_fd)
 
-    db = mvrs_db.connect(path, buffer_pages=buffer_pages, checkpoint_bytes=checkpoint_bytes)
+    # The crash points are counted on a fixed workload, so the extra commits of an automatic
+    # ANALYZE are left out except in the one scenario that exists to test them.
+    db = mvrs_db.connect(
+        path,
+        buffer_pages=buffer_pages,
+        checkpoint_bytes=checkpoint_bytes,
+        auto_analyze=scenarios.AUTO_ANALYZE.get(scenario, False),
+    )
     setup(db)
     acknowledge("setup")
     for k in range(transactions):

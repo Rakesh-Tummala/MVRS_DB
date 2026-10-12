@@ -31,7 +31,11 @@ def main() -> None:
 
     isolation = os.environ.get("MVRS_ISOLATION", "locking")
     db = mvrs_db.connect(
-        path, buffer_pages=buffer_pages, checkpoint_bytes=checkpoint_bytes, isolation=isolation
+        path,
+        buffer_pages=buffer_pages,
+        checkpoint_bytes=checkpoint_bytes,
+        isolation=isolation,
+        auto_analyze=False,  # the crash points are counted on a fixed number of commits
     )
     db.execute("CREATE TABLE log (id INTEGER PRIMARY KEY, tid INTEGER, seq INTEGER, pad TEXT)")
     db.execute("CREATE INDEX log_tid ON log (tid)")  # a secondary index, kept up by every commit

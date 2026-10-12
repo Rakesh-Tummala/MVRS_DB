@@ -204,6 +204,14 @@ class Catalog:
         self._next_table_id = 1
         # Where each column's statistics record lives in the catalog heap.
         self._stats_rids: dict[tuple[int, int], RecordId] = {}
+        # Rows inserted, updated or deleted per table (by table id) since its statistics
+        # were last collected, to decide when they are stale. _pending holds the running
+        # transaction's share and is dropped by a rollback; _changes holds what has
+        # committed. They live here, not on Table, because a rollback replaces the
+        # Table objects but must not forget earlier commits.
+        self._pending: dict[int, int] = {}
+        self._changes: dict[int, int] = {}
+        self._analyzed_now: set[int] = set()
         # Changes whenever the set of Table objects changes (a load, CREATE or
         # DROP). A query plan holds Table objects, so it is valid only for the
         # epoch it was built in.
@@ -263,6 +271,8 @@ class Catalog:
                     )
                 owner.stats[position] = column_stats
             self._stats_rids = {key: rid for key, (rid, _stats) in stats_found.items()}
+            self._pending.clear()  # a reload follows a rollback: its changes never happened
+            self._analyzed_now.clear()
             self._heap = heap
             self._tables = tables
             self._next_table_id = next_id
@@ -294,11 +304,54 @@ class Catalog:
         with self._lock:
             return sum(table.save_vector_indexes() for table in self._tables.values())
 
-    def transaction_committed(self) -> None:
-        """The changes made to in-memory vector indexes are now permanent."""
+    def note_changes(self, table: Table, count: int) -> None:
+        """Record that the running transaction inserted, updated or deleted `count` rows."""
+        if count:
+            with self._lock:
+                key = table.schema.table_id
+                self._pending[key] = self._pending.get(key, 0) + count
+
+    def transaction_committed(self) -> list[str]:
+        """The transaction's changes are now permanent.
+
+        Makes the changes to in-memory vector indexes permanent, adds the
+        transaction's row changes to each table's count, and restarts the count of any
+        table it analysed. Returns the names of the tables whose count grew.
+        """
         with self._lock:
             for table in self._tables.values():
                 table._ann_changed = False
+            by_id = {table.schema.table_id: table.schema.name for table in self._tables.values()}
+            touched = []
+            for table_id, count in self._pending.items():
+                self._changes[table_id] = self._changes.get(table_id, 0) + count
+                if table_id in by_id:
+                    touched.append(by_id[table_id])
+            self._pending.clear()
+            for table_id in self._analyzed_now:
+                self._changes[table_id] = 0
+            self._analyzed_now.clear()
+            return touched
+
+    def stale_tables(self, names: list[str]) -> list[str]:
+        """Which of these tables have changed enough since ANALYZE to be worth analysing again.
+
+        A table is stale once the rows changed since its statistics were collected reach
+        AUTO_ANALYZE_MIN_CHANGES plus AUTO_ANALYZE_FRACTION of the rows it had then (of
+        zero, for a table never analysed). The test is cheap: two integers per table.
+        """
+        with self._lock:
+            stale = []
+            for name in names:
+                table = self._tables.get(name)
+                if table is None:
+                    continue
+                stats = table.stats.get(0)
+                base = stats.rows if stats is not None else 0
+                changed = self._changes.get(table.schema.table_id, 0)
+                if changed >= config.AUTO_ANALYZE_MIN_CHANGES + config.AUTO_ANALYZE_FRACTION * base:
+                    stale.append(name)
+            return stale
 
     def _open_table(self, schema: TableSchema, rid: RecordId) -> Table:
         indexes = {
@@ -544,6 +597,7 @@ class Catalog:
                         self._stats_rids[key] = self.heap.update(existing, record)
                 table.stats = fresh
                 table.row_count = rows
+                self._analyzed_now.add(schema.table_id)
             self.epoch += 1  # plans were made with the old estimates
             return names
 
@@ -553,6 +607,8 @@ class Catalog:
             table = self.get(name)
             for key in [key for key in self._stats_rids if key[0] == table.schema.table_id]:
                 self.heap.delete(self._stats_rids.pop(key))
+            self._changes.pop(table.schema.table_id, None)
+            self._pending.pop(table.schema.table_id, None)
             for index in table.indexes.values():
                 index.drop()
             table.heap.drop()

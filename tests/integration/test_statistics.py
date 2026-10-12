@@ -17,7 +17,8 @@ from mvrs_db.sql.parser import parse
 
 def build(path: Path) -> mvrs_db.Database:
     """5,000 orders: status is very skewed, region mildly, amount roughly bell-shaped."""
-    db = mvrs_db.connect(path, synchronous=False)
+    # auto_analyze=False: these tests start from a table with no statistics and call ANALYZE
+    db = mvrs_db.connect(path, synchronous=False, auto_analyze=False)
     db.execute(
         "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, region INTEGER, amount REAL, "
         "note TEXT)"
@@ -97,7 +98,7 @@ def test_what_is_collected(db: mvrs_db.Database) -> None:
 
 
 def test_vector_columns_are_skipped(tmp_path: Path) -> None:
-    database = mvrs_db.connect(tmp_path / "vec.mvrs", synchronous=False)
+    database = mvrs_db.connect(tmp_path / "vec.mvrs", synchronous=False, auto_analyze=False)
     try:
         database.execute("CREATE TABLE v (id INTEGER PRIMARY KEY, e VECTOR(2), n INTEGER)")
         database.execute("INSERT INTO v VALUES (1, [1, 2], 5), (2, [3, 4], 6)")
@@ -117,7 +118,7 @@ def test_statistics_survive_reopening(tmp_path: Path) -> None:
     database.execute("ANALYZE orders")
     before = database._catalog.get("orders").stats
     database.close()
-    with mvrs_db.connect(path) as again:
+    with mvrs_db.connect(path, auto_analyze=False) as again:
         assert again._catalog.get("orders").stats == before
         again.check()
 
@@ -164,7 +165,9 @@ def test_creating_and_dropping_an_index_keeps_the_statistics(db: mvrs_db.Databas
 def test_snapshot_readers_plan_with_the_statistics_of_their_snapshot(tmp_path: Path) -> None:
     database = build(tmp_path / "snap.mvrs")
     database.close()
-    database = mvrs_db.connect(tmp_path / "snap.mvrs", isolation="snapshot", synchronous=False)
+    database = mvrs_db.connect(
+        tmp_path / "snap.mvrs", isolation="snapshot", synchronous=False, auto_analyze=False
+    )
     try:
         database.execute("CREATE INDEX by_status ON orders (status)")
         reader, writer = database.connect(), database.connect()
@@ -236,7 +239,7 @@ def test_group_by_estimates_the_number_of_groups(db: mvrs_db.Database) -> None:
 
 
 def test_join_estimates_use_distinct_counts(tmp_path: Path) -> None:
-    database = mvrs_db.connect(tmp_path / "join.mvrs", synchronous=False)
+    database = mvrs_db.connect(tmp_path / "join.mvrs", synchronous=False, auto_analyze=False)
     try:
         database.execute("CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER)")
         database.execute("CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER)")

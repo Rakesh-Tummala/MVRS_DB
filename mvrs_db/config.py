@@ -34,6 +34,13 @@ LOCK_SUFFIX = ".lock"
 # The log is emptied by a checkpoint once it grows past this many bytes.
 DEFAULT_CHECKPOINT_BYTES = 8 * 1024 * 1024
 
+# --- statistics ---
+# A table's statistics are refreshed automatically once this many rows plus this
+# fraction of the rows it had when last analysed have been inserted, updated or
+# deleted (PostgreSQL's autovacuum uses the same two numbers: 50 and 10%).
+AUTO_ANALYZE_MIN_CHANGES = 50
+AUTO_ANALYZE_FRACTION = 0.1
+
 # --- SQL ---
 MAX_SQL_LENGTH = 1024 * 1024
 MAX_IDENTIFIER_LENGTH = 63
